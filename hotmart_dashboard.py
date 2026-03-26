@@ -94,11 +94,10 @@ def get_student_progress(access_token, subdomain, user_id):
     resp = requests.get(url, headers=headers, timeout=15)
     if resp.status_code == 200:
         try:
-    return resp.json().get("lessons", []), None
-except Exception:
-    return [], None
+            return resp.json().get("lessons", []), None
+        except Exception:
+            return [], None
     return [], f"Error {resp.status_code}"
-
 
 # ─── SIDEBAR · FORMULARIO DE CREDENCIALES ────────────────────────────────────
 
