@@ -62,14 +62,19 @@ def get_modules(access_token, subdomain, is_extra=False):
     url = f"https://developers.hotmart.com/club/api/v1/modules?subdomain={subdomain}&is_extra={str(is_extra).lower()}"
     resp = requests.get(url, headers=headers, timeout=15)
     if resp.status_code == 200:
-        data = resp.json()
-        if isinstance(data, list):
-            return data, None
-        elif "items" in data:
-            return data["items"], None
-        elif isinstance(data, dict):
-            return list(data.values())[0] if data else [], None
-    return [], f"Error {resp.status_code}: {resp.text}"
+        try:
+            data = resp.json()
+            if isinstance(data, list):
+                return data, None
+            elif "items" in data:
+                return data["items"], None
+            elif isinstance(data, dict):
+                return list(data.values())[0] if data else [], None
+        except Exception:
+            return [], f"JSON invalido en modulos. Respuesta: {resp.text[:300]}"
+    elif resp.status_code == 204:
+        return [], None
+    return [], f"HTTP {resp.status_code}: {resp.text[:300]}"
 
 
 def get_pages_for_module(access_token, subdomain, module_id):
