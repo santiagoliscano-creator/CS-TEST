@@ -216,6 +216,16 @@ if cargar_modulos:
             st.stop()
         st.success("Token obtenido correctamente.")
 
+        # DIAGNOSTICO TEMPORAL - borrar despues
+        students_diag, _ = get_students(token, subdomain)
+        if students_diag:
+            st.write("**Estructura del objeto usuario:**")
+            st.json(students_diag[0])
+            uid_diag = students_diag[0].get("id", "")
+            lec_diag, err_diag = get_student_progress(token, subdomain, uid_diag)
+            st.write(f"**Lecciones con id `{uid_diag}`:** {len(lec_diag)} | Error: `{err_diag}`")
+        st.stop()
+
         # --- Intentar cargar módulos via endpoint ---
         modulos_main,  err_m  = get_modules(token, subdomain, is_extra=False)
         modulos_extra, err_me = get_modules(token, subdomain, is_extra=True)
