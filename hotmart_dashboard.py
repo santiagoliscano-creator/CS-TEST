@@ -231,6 +231,10 @@ if cargar_modulos:
             # Test get_students
             students_tmp, err_st = get_students(token, subdomain)
             st.write(f"- `/users` → {len(students_tmp)} alumnos | Error: `{err_st}`")
+            
+            if students_tmp:
+                st.write("**Estructura del objeto usuario (primer alumno):**")
+                st.json(students_tmp[0])
 
             if not students_tmp:
                 st.error("La lista de alumnos tambien esta vacia. El subdominio o las credenciales no tienen acceso a este Club.")
