@@ -658,9 +658,7 @@ with tab5:
     st.caption("Verde = avanzado · Amarillo = en progreso · Rojo = en riesgo o sin iniciar")
     if not tabla_cruzada.empty:
         st.dataframe(
-            tabla_cruzada.set_index("Nombre").style.background_gradient(
-                cmap="RdYlGn", vmin=0, vmax=100, axis=None
-            ).format("{:.0f}%"),
+            tabla_cruzada.set_index("Nombre"),
             use_container_width=True
         )
     else:
