@@ -1,5 +1,5 @@
 """
-Hotmart Club - Dashboard de Progreso de Alumnos v3
+Hotmart Club - Dashboard de Progreso de Alumnos - VERSION DIAGNOSTICO
 """
 
 import streamlit as st
@@ -57,8 +57,10 @@ def get_modules(access_token, subdomain, is_extra=False):
     url = f"https://developers.hotmart.com/club/api/v1/modules?subdomain={subdomain}&is_extra={str(is_extra).lower()}"
     try:
         resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code in (200, 204):
-            if not resp.text or not resp.text.strip():
+        status = resp.status_code
+        text   = resp.text
+        if status in (200, 204):
+            if not text or not text.strip():
                 return [], "empty_body"
             try:
                 data = resp.json()
@@ -69,8 +71,8 @@ def get_modules(access_token, subdomain, is_extra=False):
                 elif isinstance(data, dict):
                     return list(data.values())[0] if data else [], None
             except Exception:
-                return [], f"JSON invalido: {resp.text[:200]}"
-        return [], f"HTTP {resp.status_code}: {resp.text[:200]}"
+                return [], f"JSON invalido: {text[:300]}"
+        return [], f"HTTP {status}: {text[:300]}"
     except Exception as e:
         return [], str(e)
 
@@ -106,9 +108,11 @@ def get_students(access_token, subdomain):
     url = f"https://developers.hotmart.com/club/api/v1/users?subdomain={subdomain}"
     try:
         resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code == 200:
-            if not resp.text or not resp.text.strip():
-                return [], "Respuesta vacia del servidor"
+        status = resp.status_code
+        text   = resp.text
+        if status == 200:
+            if not text or not text.strip():
+                return [], "Respuesta vacia"
             data = resp.json()
             if isinstance(data, list):
                 return data, None
@@ -116,7 +120,7 @@ def get_students(access_token, subdomain):
                 return data["items"], None
             elif isinstance(data, dict):
                 return list(data.values())[0] if data else [], None
-        return [], f"Error {resp.status_code}: {resp.text}"
+        return [], f"HTTP {status}: {text[:300]}"
     except Exception as e:
         return [], str(e)
 
@@ -205,43 +209,71 @@ if not all([basic_token, client_id, client_secret, subdomain]):
 if cargar_modulos:
     with st.spinner("Autenticando y cargando modulos..."):
 
+        # --- Autenticación ---
         token, err = get_access_token(basic_token, client_id, client_secret)
         if err:
             st.error(f"Error de autenticacion: {err}")
             st.stop()
+        st.success("Token obtenido correctamente.")
 
+        # --- Intentar cargar módulos via endpoint ---
         modulos_main,  err_m  = get_modules(token, subdomain, is_extra=False)
         modulos_extra, err_me = get_modules(token, subdomain, is_extra=True)
         todos_modulos = modulos_main + modulos_extra
 
         modulo_info = {}
 
+        # --- DIAGNÓSTICO: si módulos falla, mostrar info detallada ---
         if not todos_modulos:
-            # Fallback: extraer módulos desde el progreso de alumnos
-            st.warning("El endpoint de modulos no devolvio datos. Extrayendo modulos desde el progreso de alumnos...")
-            students_tmp, _ = get_students(token, subdomain)
-            nombres_modulos_tmp = set()
-            for s in students_tmp[:15]:
-                uid = s.get("id", "")
-                lecciones_tmp, _ = get_student_progress(token, subdomain, uid)
-                for l in lecciones_tmp:
-                    m = l.get("module_name", "")
-                    if m:
-                        nombres_modulos_tmp.add(m)
-                if len(nombres_modulos_tmp) > 0:
-                    time.sleep(0.2)
+            st.warning(f"Endpoint /modules vacio. Error main: `{err_m}` | Error extra: `{err_me}`")
+            st.write("**Ejecutando diagnostico...**")
 
-            for nombre in sorted(nombres_modulos_tmp):
-                modulo_info[nombre] = {
-                    "module_id":   "",
-                    "total_pages": 0,
-                    "is_extra":    False,
-                    "is_public":   True
-                }
+            # Test get_students
+            students_tmp, err_st = get_students(token, subdomain)
+            st.write(f"- `/users` → {len(students_tmp)} alumnos | Error: `{err_st}`")
 
-            if modulo_info:
-                st.info(f"Se encontraron {len(modulo_info)} modulos via progreso de alumnos. El conteo de lecciones reales no estara disponible.")
+            if not students_tmp:
+                st.error("La lista de alumnos tambien esta vacia. El subdominio o las credenciales no tienen acceso a este Club.")
+                st.stop()
+
+            # Test progreso primer alumno
+            uid_test  = students_tmp[0].get("id", "")
+            name_test = students_tmp[0].get("name", "")
+            st.write(f"- Probando `/lessons` con: **{name_test}** (ID: `{uid_test}`)")
+            lec_test, err_lec = get_student_progress(token, subdomain, uid_test)
+            st.write(f"- `/lessons` → {len(lec_test)} lecciones | Error: `{err_lec}`")
+
+            if lec_test:
+                st.write(f"- Ejemplo de leccion recibida: `{lec_test[0]}`")
+                # Extraer módulos desde progreso de alumnos (fallback)
+                nombres_modulos_tmp = set()
+                for s in students_tmp[:20]:
+                    uid = s.get("id", "")
+                    lecs, _ = get_student_progress(token, subdomain, uid)
+                    for l in lecs:
+                        m = l.get("module_name", "")
+                        if m:
+                            nombres_modulos_tmp.add(m)
+                    time.sleep(0.15)
+
+                for nombre in sorted(nombres_modulos_tmp):
+                    modulo_info[nombre] = {
+                        "module_id":   "",
+                        "total_pages": 0,
+                        "is_extra":    False,
+                        "is_public":   True
+                    }
+                if modulo_info:
+                    st.info(f"Modulos extraidos via fallback: {list(modulo_info.keys())}")
+                else:
+                    st.error("No se encontraron modulos en las lecciones de los alumnos.")
+                    st.stop()
+            else:
+                st.error(f"No hay lecciones disponibles para este alumno. Error: {err_lec}")
+                st.stop()
+
         else:
+            # Módulos cargados correctamente via endpoint
             for m in todos_modulos:
                 mid  = m.get("module_id", m.get("id", ""))
                 name = m.get("name", f"Modulo {mid}")
@@ -309,7 +341,7 @@ total_lecciones_reales = sum(modulo_info[m]["total_pages"] for m in modulos_sele
 usar_total_real = total_lecciones_reales > 0
 
 if usar_total_real:
-    st.info(f"**{len(modulos_seleccionados)} modulos** seleccionados · **{total_lecciones_reales} lecciones** en total")
+    st.info(f"**{len(modulos_seleccionados)} modulos** · **{total_lecciones_reales} lecciones** en total")
 else:
     st.info(f"**{len(modulos_seleccionados)} modulos** seleccionados · El % de avance se calculara sobre las lecciones registradas por alumno.")
 
@@ -399,7 +431,8 @@ for nombre, grupo in df.groupby("Nombre"):
     if grupo_activo.empty:
         resumen_rows.append({
             "Nombre": nombre, "Email": email,
-            "Completadas": 0, "Total": total_lecciones_reales if usar_total_real else 0,
+            "Completadas": 0,
+            "Total": total_lecciones_reales if usar_total_real else 0,
             "Sin completar": total_lecciones_reales if usar_total_real else 0,
             "Pct Avance": 0.0, "Estado": "Sin actividad",
             "Ultima leccion": "Nunca accedio", "Ultimo modulo": "---",
@@ -425,7 +458,6 @@ for nombre, grupo in df.groupby("Nombre"):
 
 resumen = pd.DataFrame(resumen_rows)
 
-# Avance por módulo × alumno
 pivot_rows = []
 for m in modulos_seleccionados:
     total_m_real = modulo_info[m]["total_pages"]
@@ -485,9 +517,6 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Tabla cruzada"
 ])
 
-
-# ── TAB 1 ─────────────────────────────────────────────────────────────────────
-
 with tab1:
     col_l, col_r = st.columns(2)
     with col_l:
@@ -500,7 +529,6 @@ with tab1:
         fig_d.update_layout(margin=dict(t=10,b=10,l=10,r=10), height=300,
                             paper_bgcolor="rgba(0,0,0,0)", showlegend=False)
         st.plotly_chart(fig_d, use_container_width=True)
-
     with col_r:
         st.subheader("Progreso por alumno")
         sorted_r = resumen.sort_values("Pct Avance", ascending=True)
@@ -520,20 +548,15 @@ with tab1:
             paper_bgcolor="rgba(0,0,0,0)", showlegend=False
         )
         st.plotly_chart(fig_a, use_container_width=True)
-
     st.subheader("Detalle por alumno")
     st.dataframe(
         resumen[["Nombre","Email","Completadas","Total","Pct Avance","Estado"]].sort_values("Pct Avance"),
         use_container_width=True, hide_index=True
     )
 
-
-# ── TAB 2 ─────────────────────────────────────────────────────────────────────
-
 with tab2:
     st.subheader("Donde se quedo cada alumno")
     col_a, col_b = st.columns([1,1])
-
     with col_a:
         st.markdown("**Alumnos sin ninguna actividad**")
         sin_act = resumen[resumen["Estado"] == "Sin actividad"][["Nombre","Email"]]
@@ -542,7 +565,6 @@ with tab2:
         else:
             st.error(f"{len(sin_act)} alumnos nunca accedieron:")
             st.dataframe(sin_act, use_container_width=True, hide_index=True)
-
     with col_b:
         st.markdown("**Modulos con mas lecciones pendientes**")
         if not abandono_modulo.empty:
@@ -558,7 +580,6 @@ with tab2:
                 paper_bgcolor="rgba(0,0,0,0)", showlegend=False
             )
             st.plotly_chart(fig_crit, use_container_width=True)
-
     st.markdown("---")
     st.subheader("Ultima actividad y punto de abandono")
     df_ab = resumen[resumen["Estado"] != "Sin actividad"][[
@@ -568,9 +589,6 @@ with tab2:
     ]].sort_values("Pct Avance")
     st.dataframe(df_ab, use_container_width=True, hide_index=True)
 
-
-# ── TAB 3 ─────────────────────────────────────────────────────────────────────
-
 with tab3:
     st.subheader("Completitud por modulo")
     if not df_pivot.empty:
@@ -579,18 +597,15 @@ with tab3:
             Pendientes=("Pendientes","sum"),
             Total=("Total modulo","first")
         ).reset_index()
-        mod_global["Pct Global"] = round(
-            mod_global["Completadas"] / (mod_global["Total"] * total_alumnos) * 100, 1
-        ).clip(0, 100)
-
+        mod_global["Pct Global"] = (
+            mod_global["Completadas"] / (mod_global["Total"] * total_alumnos) * 100
+        ).clip(0, 100).round(1)
         fig_mod = go.Figure(go.Bar(
             x=mod_global["Pct Global"], y=mod_global["Modulo"],
             orientation="h",
             marker_color=["#2ecc8f" if p>=60 else "#f5a623" if p>=35 else "#e05151" for p in mod_global["Pct Global"]],
             text=[f"{p}%" for p in mod_global["Pct Global"]],
-            textposition="outside",
-            customdata=mod_global[["Completadas","Pendientes"]],
-            hovertemplate="<b>%{y}</b><br>Completadas: %{customdata[0]}<br>Pendientes: %{customdata[1]}<extra></extra>"
+            textposition="outside"
         ))
         fig_mod.update_layout(
             xaxis=dict(range=[0,115], ticksuffix="%"),
@@ -600,7 +615,6 @@ with tab3:
             paper_bgcolor="rgba(0,0,0,0)", showlegend=False
         )
         st.plotly_chart(fig_mod, use_container_width=True)
-
         st.markdown("---")
         st.subheader("Avance por alumno en un modulo especifico")
         filtro_mod = st.selectbox("Selecciona el modulo", sorted(df_pivot["Modulo"].unique()))
@@ -622,9 +636,6 @@ with tab3:
     else:
         st.warning("No hay datos de modulos disponibles.")
 
-
-# ── TAB 4 ─────────────────────────────────────────────────────────────────────
-
 with tab4:
     st.subheader("Lecciones pendientes por alumno")
     if not pendientes_detalle.empty:
@@ -637,9 +648,6 @@ with tab4:
         st.caption(f"{len(df_pf)} lecciones pendientes")
     else:
         st.success("Todos los alumnos completaron todas las lecciones.")
-
-
-# ── TAB 5 ─────────────────────────────────────────────────────────────────────
 
 with tab5:
     st.subheader("Avance alumno x modulo (%)")
