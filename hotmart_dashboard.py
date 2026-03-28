@@ -1,5 +1,6 @@
 """
-Hotmart Club · Club Analytics v5.3
+Hotmart Club · Club Analytics v5.4
+Fix: titlefont deprecated in plotly, better module fallback
 """
 
 import streamlit as st
@@ -28,8 +29,6 @@ footer { display:none !important; }
 #MainMenu { display:none !important; }
 .stDeployButton { display:none !important; }
 .stApp { background:#faf9f7 !important; }
-
-/* Inputs */
 .stTextInput > div > div > input {
     border-radius:10px !important; border:1.5px solid #e0ddd8 !important;
     font-size:14px !important; padding:10px 14px !important;
@@ -38,51 +37,32 @@ footer { display:none !important; }
 .stTextInput > div > div > input::placeholder { color:#c0bdb8 !important; }
 .stTextInput > div > div > input:focus {
     border-color:#E8420A !important;
-    box-shadow:0 0 0 3px rgba(232,66,10,0.12) !important;
-    outline:none !important;
+    box-shadow:0 0 0 3px rgba(232,66,10,0.12) !important; outline:none !important;
 }
 .stTextInput label { font-weight:700 !important; color:#3d3a35 !important; font-size:13px !important; }
-
-/* Botones */
 .stButton > button[kind="primary"] {
     background:#E8420A !important; color:white !important; border:none !important;
     border-radius:10px !important; font-weight:700 !important; font-size:15px !important;
     padding:12px 28px !important; box-shadow:0 4px 15px rgba(232,66,10,0.3) !important;
-    transition:all 0.2s !important;
 }
 .stButton > button[kind="primary"]:hover { background:#c93608 !important; transform:translateY(-1px) !important; }
 .stButton > button:not([kind="primary"]) {
     background:white !important; color:#E8420A !important;
     border:2px solid #E8420A !important; border-radius:10px !important; font-weight:700 !important;
 }
-
-/* Métricas */
 [data-testid="stMetric"] {
     background:white !important; border-radius:14px !important; padding:18px 20px !important;
     border:1px solid #f0ede8 !important; box-shadow:0 2px 8px rgba(0,0,0,0.05) !important;
 }
 [data-testid="stMetricLabel"] { font-size:12px !important; font-weight:700 !important; color:#8c8880 !important; text-transform:uppercase !important; letter-spacing:0.06em !important; }
 [data-testid="stMetricValue"] { font-size:28px !important; font-weight:800 !important; color:#1a1815 !important; }
-
-/* Tabs */
 .stTabs [data-baseweb="tab-list"] { gap:4px !important; background:#f0ede8 !important; border-radius:12px !important; padding:4px !important; }
 .stTabs [data-baseweb="tab"] { border-radius:9px !important; font-weight:600 !important; font-size:13px !important; color:#8c8880 !important; padding:8px 16px !important; }
 .stTabs [aria-selected="true"] { background:white !important; color:#E8420A !important; box-shadow:0 1px 4px rgba(0,0,0,0.08) !important; }
-
-/* Tablas - fondo claro texto oscuro */
 [data-testid="stDataFrame"] { border-radius:12px !important; overflow:hidden !important; }
-[data-testid="stDataFrame"] table { background:white !important; color:#1a1815 !important; }
-[data-testid="stDataFrame"] th { background:#f5f2ee !important; color:#3d3a35 !important; font-weight:700 !important; }
-[data-testid="stDataFrame"] td { background:white !important; color:#1a1815 !important; }
-
-/* Selects */
 .stSelectbox > div > div { border-radius:10px !important; border:1.5px solid #e0ddd8 !important; }
 .stMultiSelect > div > div { border-radius:10px !important; border:1.5px solid #e0ddd8 !important; }
-
-/* Progress bar */
 .stProgress > div > div > div { background:#E8420A !important; }
-
-/* Caption box */
 .caption-box {
     background:#f5f2ee; border-radius:10px; padding:12px 16px; margin-bottom:16px;
     font-size:13px; color:#5c5a56; line-height:1.6; border-left:3px solid #E8420A;
@@ -182,13 +162,25 @@ COLOR_MAP = {
     "Avanzado":      "#b83208"
 }
 
+# Fuente para gráficas — sin titlefont (deprecado)
 TFONT = dict(family="Nunito Sans", color="#3d3a35", size=12)
+
+def make_layout(**kwargs):
+    """Layout base para todas las gráficas — sin parámetros deprecados."""
+    base = dict(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Nunito Sans", color="#3d3a35", size=12),
+        showlegend=False,
+    )
+    base.update(kwargs)
+    return base
+
+def bar_colors(values):
+    return ["#b83208" if v >= 60 else "#E8420A" if v >= 35 else "#ffb3a0" for v in values]
 
 def caption(text):
     st.markdown(f'<div class="caption-box">{text}</div>', unsafe_allow_html=True)
-
-def bar_colors(values, threshold_high=60, threshold_mid=35):
-    return ["#b83208" if v >= threshold_high else "#E8420A" if v >= threshold_mid else "#ffb3a0" for v in values]
 
 def calcular_abandono(df_alumno):
     completadas = df_alumno[df_alumno["Completada"] == "Si"].sort_values("Fecha Completado", ascending=False)
@@ -199,6 +191,20 @@ def calcular_abandono(df_alumno):
     ma = pendientes.iloc[0]["Modulo"]            if not pendientes.empty else "Completado ✓"
     la = pendientes.iloc[0]["Leccion"]           if not pendientes.empty else "Completado ✓"
     return ul, um, uf, ma, la
+
+def extraer_modulos_desde_alumnos(token, subdomain, students, max_alumnos=30):
+    """Fallback: extrae nombres de módulos del progreso de los alumnos."""
+    nombres_tmp = set()
+    for s in (students or [])[:max_alumnos]:
+        uid = s.get("user_id", s.get("id", ""))
+        if not uid: continue
+        lecs, _ = get_student_progress(token, subdomain, uid)
+        for l in (lecs or []):
+            m = l.get("module_name", "")
+            if m: nombres_tmp.add(m)
+        if len(nombres_tmp) > 0:
+            time.sleep(0.1)
+    return sorted(nombres_tmp)
 
 
 # ─── SESSION STATE ────────────────────────────────────────────────────────────
@@ -219,7 +225,6 @@ if st.session_state["page"] == "login":
     with col_c:
         st.markdown("<div style='height:48px'></div>", unsafe_allow_html=True)
 
-        # Logo
         st.markdown("""
         <div style="text-align:center; margin-bottom:28px;">
             <div style="display:inline-flex; align-items:center; justify-content:center;
@@ -234,14 +239,13 @@ if st.session_state["page"] == "login":
         </div>
         """, unsafe_allow_html=True)
 
-        # Formulario dentro de un container con borde via CSS
         with st.container(border=True):
             st.markdown("### Conecta tu Club")
-            st.markdown("<p style='color:#8c8880; font-size:13px; margin-top:-12px; margin-bottom:16px;'>Ingresa tus credenciales de Hotmart Developers</p>", unsafe_allow_html=True)
-            basic_token   = st.text_input("Basic Token",         placeholder="Basic NTM5OWZlMD...",                   key="l_basic")
-            client_id     = st.text_input("Client ID",           placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",  key="l_cid")
-            client_secret = st.text_input("Client Secret",       placeholder="••••••••••••••••", type="password",     key="l_secret")
-            subdomain_in  = st.text_input("Subdominio del Club", placeholder="mi-curso",                              key="l_sub",
+            st.markdown("<p style='color:#8c8880;font-size:13px;margin-top:-12px;margin-bottom:16px;'>Ingresa tus credenciales de Hotmart Developers</p>", unsafe_allow_html=True)
+            basic_token   = st.text_input("Basic Token",         placeholder="Basic NTM5OWZlMD...",                  key="l_basic")
+            client_id     = st.text_input("Client ID",           placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", key="l_cid")
+            client_secret = st.text_input("Client Secret",       placeholder="••••••••••••••••", type="password",    key="l_secret")
+            subdomain_in  = st.text_input("Subdominio del Club", placeholder="mi-curso",                             key="l_sub",
                                           help="Lo que aparece en hotmart.com/es/club/SUBDOMINIO")
             st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
             conectar = st.button("Conectar y ver Analytics →", type="primary", use_container_width=True)
@@ -251,7 +255,8 @@ if st.session_state["page"] == "login":
             <p style="color:#b8b4ae; font-size:12px; line-height:1.7;">
                 ¿Cómo obtener mis credenciales?<br>
                 Entra a <strong style="color:#E8420A;">developers.hotmart.com</strong>
-                → crea una aplicación → copia tus credenciales
+                → crea una aplicación → copia tus credenciales.<br>
+                <strong>Las mismas credenciales sirven para todos tus Clubs.</strong>
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -260,11 +265,12 @@ if st.session_state["page"] == "login":
             if not all([basic_token, client_id, client_secret, subdomain_in]):
                 st.error("Por favor completa todos los campos.")
             else:
-                with st.spinner("Verificando credenciales..."):
+                with st.spinner("Verificando credenciales y cargando módulos..."):
                     token, err = get_access_token(basic_token, client_id, client_secret)
                     if err:
                         st.error(f"Credenciales incorrectas: {err}")
                     else:
+                        # Intentar cargar módulos via API
                         mods_main, _  = get_modules(token, subdomain_in, is_extra=False)
                         mods_extra, _ = get_modules(token, subdomain_in, is_extra=True)
                         todos = mods_main + mods_extra
@@ -278,30 +284,29 @@ if st.session_state["page"] == "login":
                                 total_pages = len([p for p in pages if p.get("type","CONTENT") != "ADVERTISEMENT"]) if pages else 0
                                 modulo_info[name] = {"module_id": mid, "total_pages": total_pages, "is_extra": m.get("is_extra", False)}
                         else:
-                            # Fallback: extraer módulos desde progreso de alumnos
-                            students_tmp, _ = get_students(token, subdomain_in)
-                            nombres_tmp = set()
-                            for s in (students_tmp or [])[:20]:
-                                uid = s.get("user_id", s.get("id", ""))
-                                if not uid: continue
-                                lecs, _ = get_student_progress(token, subdomain_in, uid)
-                                for l in (lecs or []):
-                                    m = l.get("module_name", "")
-                                    if m: nombres_tmp.add(m)
-                                if nombres_tmp: time.sleep(0.15)
-                            for nombre in sorted(nombres_tmp):
-                                modulo_info[nombre] = {"module_id": "", "total_pages": 0, "is_extra": False}
+                            # Fallback: extraer módulos desde los alumnos
+                            students_tmp, err_st = get_students(token, subdomain_in)
+                            if not students_tmp:
+                                st.error(f"No se encontraron alumnos en el subdominio '{subdomain_in}'. Verifica que el subdominio sea correcto y que esta cuenta tenga acceso a ese Club.")
+                                st.stop()
 
-                        if not modulo_info:
-                            st.error("No se encontraron módulos. Verifica que el subdominio sea correcto y que la cuenta tenga acceso a este Club.")
-                        else:
-                            st.session_state.update({
-                                "token": token, "modulo_info": modulo_info,
-                                "subdomain": subdomain_in,
-                                "club_name": subdomain_in.replace("-"," ").title(),
-                                "page": "selector"
-                            })
-                            st.rerun()
+                            nombres_tmp = extraer_modulos_desde_alumnos(token, subdomain_in, students_tmp, max_alumnos=30)
+
+                            if not nombres_tmp:
+                                # Último recurso: crear un módulo genérico para que pueda continuar
+                                st.warning(f"No se pudieron detectar módulos automáticamente para '{subdomain_in}'. Se cargará el Club completo sin filtro de módulos.")
+                                modulo_info["Contenido del Club"] = {"module_id": "", "total_pages": 0, "is_extra": False}
+                            else:
+                                for nombre in nombres_tmp:
+                                    modulo_info[nombre] = {"module_id": "", "total_pages": 0, "is_extra": False}
+
+                        st.session_state.update({
+                            "token": token, "modulo_info": modulo_info,
+                            "subdomain": subdomain_in,
+                            "club_name": subdomain_in.replace("-"," ").title(),
+                            "page": "selector"
+                        })
+                        st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -328,7 +333,7 @@ elif st.session_state["page"] == "selector":
     </div>
     <h2 style="font-weight:800; font-size:22px; color:#1a1815; margin-bottom:8px;">¿Qué producto quieres analizar?</h2>
     <p style="color:#8c8880; font-size:14px; margin-bottom:28px;">
-        Selecciona los módulos que pertenecen al producto que quieres revisar.
+        Selecciona los módulos del producto que quieres revisar.
         Si tu Club tiene un solo producto, selecciónalos todos.
     </p>
     """, unsafe_allow_html=True)
@@ -386,6 +391,7 @@ elif st.session_state["page"] == "loading":
     modulo_info = st.session_state["modulo_info"]
     subdomain   = st.session_state["subdomain"]
     modulos_sel = st.session_state["modulos_seleccionados"]
+    usar_filtro_modulos = modulos_sel != ["Contenido del Club"]
 
     _, col_c, _ = st.columns([1, 1.5, 1])
     with col_c:
@@ -412,10 +418,10 @@ elif st.session_state["page"] == "loading":
         uid           = student.get("user_id", student.get("id", ""))
         name          = student.get("name", "Sin nombre")
         email         = student.get("email", "")
-        prog_obj      = student.get("progress", {})
-        pct_hotmart   = prog_obj.get("completed_percentage", 0) or 0
-        comp_hotmart  = prog_obj.get("completed", 0) or 0
-        total_hotmart = prog_obj.get("total", 0) or 0
+        prog_obj      = student.get("progress", {}) or {}
+        pct_hotmart   = float(prog_obj.get("completed_percentage", 0) or 0)
+        comp_hotmart  = int(prog_obj.get("completed", 0) or 0)
+        total_hotmart = int(prog_obj.get("total", 0) or 0)
 
         prog_bar.progress((i + 1) / len(students))
         status_txt.markdown(f"<p style='text-align:center;color:#8c8880;font-size:13px;'>Analizando {i+1} de {len(students)} alumnos...</p>", unsafe_allow_html=True)
@@ -438,7 +444,9 @@ elif st.session_state["page"] == "loading":
 
         for l in lecciones:
             mn = l.get("module_name", "Sin modulo")
-            if mn not in modulos_sel: continue
+            # Si el módulo es "Contenido del Club" (fallback), no filtramos
+            if usar_filtro_modulos and mn not in modulos_sel:
+                continue
             fecha = ""
             if l.get("completed_date"):
                 try: fecha = datetime.fromtimestamp(l["completed_date"] / 1000).strftime("%d/%m/%Y")
@@ -460,7 +468,7 @@ elif st.session_state["page"] == "loading":
     df         = pd.DataFrame(all_data)
     df_activos = df[df["Modulo"] != "Sin actividad"]
 
-    # ── RESUMEN POR ALUMNO — usando exclusivamente datos de Hotmart ──────────
+    # Resumen por alumno — 100% datos Hotmart
     resumen_rows = []
     for nombre, grupo in df.groupby("Nombre"):
         email         = grupo["Email"].iloc[0]
@@ -490,10 +498,10 @@ elif st.session_state["page"] == "loading":
 
     resumen = pd.DataFrame(resumen_rows)
 
-    # ── AVANCE POR MÓDULO ────────────────────────────────────────────────────
+    # Pivot por módulo
     pivot_rows = []
-    for m in modulos_sel:
-        total_m_real = modulo_info[m]["total_pages"]
+    for m in (df_activos["Modulo"].unique() if not usar_filtro_modulos else modulos_sel):
+        total_m_real = modulo_info.get(m, {}).get("total_pages", 0)
         df_m = df_activos[df_activos["Modulo"] == m]
         for nombre, g in df_m.groupby("Nombre"):
             comp_m  = int((g["Completada"] == "Si").sum())
@@ -549,7 +557,7 @@ elif st.session_state["page"] == "dashboard":
     avanzados     = (resumen["Estado"] == "Avanzado").sum()
     avance_prom   = round(resumen[resumen["% Avance"] > 0]["% Avance"].mean(), 1) if (resumen["% Avance"] > 0).any() else 0
 
-    # ── HEADER ────────────────────────────────────────────────────────────────
+    # HEADER
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
         st.markdown(f"""
@@ -563,10 +571,9 @@ elif st.session_state["page"] == "dashboard":
                              border-radius:20px; padding:3px 12px; font-size:12px; font-weight:700;">{club_name}</span>
             </div>
             <p style="color:#8c8880; font-size:13px; margin:0;">
-                {len(modulos_sel)} módulos · Generado el {datetime.now().strftime('%d/%m/%Y · %H:%M')}
+                Generado el {datetime.now().strftime('%d/%m/%Y · %H:%M')}
             </p>
-        </div>
-        """, unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True)
     with col_h2:
         st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
         if st.button("← Nuevo análisis", use_container_width=True):
@@ -576,7 +583,7 @@ elif st.session_state["page"] == "dashboard":
 
     st.markdown("<div style='height:2px; background:linear-gradient(90deg,#E8420A,#ff9a7a,transparent); border-radius:2px; margin-bottom:28px;'></div>", unsafe_allow_html=True)
 
-    # ── KPIs ──────────────────────────────────────────────────────────────────
+    # KPIs
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("👥 Alumnos",         total_alumnos)
     c2.metric("📈 Avance promedio", f"{avance_prom}%")
@@ -590,7 +597,7 @@ elif st.session_state["page"] == "dashboard":
                     padding:12px 18px; margin-top:12px; display:flex; align-items:center; gap:10px;">
             <span style="font-size:18px;">🚨</span>
             <span style="font-size:14px; color:#c93608; font-weight:700;">
-                {sin_actividad} alumno{'s' if sin_actividad > 1 else ''} con 0% de avance registrado — riesgo de churn
+                {sin_actividad} alumno{'s' if sin_actividad > 1 else ''} con 0% de avance — riesgo de churn
             </span>
         </div>""", unsafe_allow_html=True)
 
@@ -600,7 +607,7 @@ elif st.session_state["page"] == "dashboard":
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    # ── TABS ──────────────────────────────────────────────────────────────────
+    # TABS
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 Resumen general",
         "🎯 Punto de abandono",
@@ -609,11 +616,11 @@ elif st.session_state["page"] == "dashboard":
         "🗺️ Mapa"
     ])
 
-    # ── TAB 1 ─────────────────────────────────────────────────────────────────
+    # TAB 1
     with tab1:
         caption("Vista global del Club. El <strong>% de avance</strong> es el dato oficial de Hotmart por alumno.")
-
         col_l, col_r = st.columns(2)
+
         with col_l:
             st.markdown("**Segmentación de alumnos**")
             seg = resumen["Estado"].value_counts().reset_index()
@@ -622,14 +629,10 @@ elif st.session_state["page"] == "dashboard":
                            color="Estado", color_discrete_map=COLOR_MAP)
             fig_d.update_traces(
                 textposition="outside", textinfo="label+value",
-                textfont=TFONT,
+                textfont=dict(family="Nunito Sans", color="#3d3a35", size=12),
                 marker=dict(line=dict(color="#faf9f7", width=3))
             )
-            fig_d.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=TFONT, showlegend=False,
-                margin=dict(t=20, b=20, l=20, r=20), height=300
-            )
+            fig_d.update_layout(make_layout(margin=dict(t=20,b=20,l=20,r=20), height=300))
             st.plotly_chart(fig_d, use_container_width=True)
 
         with col_r:
@@ -639,19 +642,20 @@ elif st.session_state["page"] == "dashboard":
                 x=sorted_r["% Avance"], y=sorted_r["Nombre"], orientation="h",
                 marker_color=[COLOR_MAP[e] for e in sorted_r["Estado"]],
                 text=[f"{p}%" for p in sorted_r["% Avance"]],
-                textposition="outside", textfont=TFONT,
+                textposition="outside",
+                textfont=dict(family="Nunito Sans", color="#3d3a35", size=11),
                 customdata=sorted_r[["Completadas","Total lecciones"]],
                 hovertemplate="<b>%{y}</b><br>%{x}% · %{customdata[0]}/%{customdata[1]} lecciones<extra></extra>"
             ))
-            fig_a.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=TFONT, showlegend=False,
+            fig_a.update_layout(make_layout(
                 xaxis=dict(range=[0,115], ticksuffix="%", showgrid=True,
-                           gridcolor="#f0ede8", zeroline=False, tickfont=TFONT),
-                yaxis=dict(showgrid=False, tickfont=TFONT),
-                margin=dict(t=10, b=10, l=10, r=60),
+                           gridcolor="#f0ede8", zeroline=False,
+                           tickfont=dict(family="Nunito Sans", color="#3d3a35")),
+                yaxis=dict(showgrid=False,
+                           tickfont=dict(family="Nunito Sans", color="#3d3a35")),
+                margin=dict(t=10,b=10,l=10,r=60),
                 height=max(300, total_alumnos * 34)
-            )
+            ))
             st.plotly_chart(fig_a, use_container_width=True)
 
         st.markdown("**Tabla detallada**")
@@ -660,11 +664,11 @@ elif st.session_state["page"] == "dashboard":
             use_container_width=True, hide_index=True
         )
 
-    # ── TAB 2 ─────────────────────────────────────────────────────────────────
+    # TAB 2
     with tab2:
-        caption("Muestra <strong>dónde exactamente paró cada alumno</strong>: la última lección completada y el módulo donde dejó de avanzar. Los alumnos con 0% son prioridad de contacto.")
+        caption("Muestra <strong>dónde exactamente paró cada alumno</strong>: la última lección completada y el primer módulo con pendientes.")
 
-        col_a, col_b = st.columns([1,1])
+        col_a, col_b = st.columns([1, 1])
         with col_a:
             st.markdown("**Alumnos con 0% de avance**")
             sin_act = resumen[resumen["Estado"] == "Sin actividad"][["Nombre","Email"]]
@@ -678,25 +682,30 @@ elif st.session_state["page"] == "dashboard":
             st.markdown("**Módulos con más lecciones pendientes**")
             if not df_pivot.empty:
                 aband = df_pivot.groupby("Modulo")["Pendientes"].sum().sort_values(ascending=False)
-                fig_ab = go.Figure(go.Bar(
-                    x=aband.values, y=aband.index, orientation="h",
-                    marker_color="#E8420A",
-                    text=aband.values, textposition="outside", textfont=TFONT
-                ))
-                fig_ab.update_layout(
-                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                    font=TFONT, showlegend=False,
-                    xaxis=dict(title="Lecciones pendientes acumuladas", tickfont=TFONT,
-                               titlefont=TFONT, zeroline=False),
-                    yaxis=dict(autorange="reversed", tickfont=TFONT),
-                    margin=dict(t=10, b=10, l=10, r=60), height=280
-                )
-                st.plotly_chart(fig_ab, use_container_width=True)
+                if not aband.empty:
+                    fig_ab = go.Figure(go.Bar(
+                        x=aband.values, y=aband.index, orientation="h",
+                        marker_color="#E8420A",
+                        text=aband.values, textposition="outside",
+                        textfont=dict(family="Nunito Sans", color="#3d3a35", size=12)
+                    ))
+                    fig_ab.update_layout(make_layout(
+                        xaxis=dict(
+                            title=dict(text="Lecciones pendientes acumuladas",
+                                       font=dict(family="Nunito Sans", color="#8c8880", size=11)),
+                            tickfont=dict(family="Nunito Sans", color="#3d3a35"),
+                            zeroline=False
+                        ),
+                        yaxis=dict(autorange="reversed",
+                                   tickfont=dict(family="Nunito Sans", color="#3d3a35")),
+                        margin=dict(t=10,b=10,l=10,r=60), height=280
+                    ))
+                    st.plotly_chart(fig_ab, use_container_width=True)
             else:
                 st.info("No hay datos de módulos disponibles.")
 
         st.markdown("---")
-        st.markdown("**Última actividad y punto de abandono por alumno**")
+        st.markdown("**Última actividad y punto de abandono**")
         df_ab = resumen[resumen["Ultimo modulo"] != "—"][[
             "Nombre","Email","Estado","% Avance",
             "Ultimo modulo","Ultima leccion","Ultima actividad",
@@ -705,103 +714,101 @@ elif st.session_state["page"] == "dashboard":
         if not df_ab.empty:
             st.dataframe(df_ab, use_container_width=True, hide_index=True)
         else:
-            st.info("No hay datos de detalle disponibles para los alumnos seleccionados.")
+            st.info("No hay datos de detalle disponibles.")
 
-    # ── TAB 3 ─────────────────────────────────────────────────────────────────
+    # TAB 3
     with tab3:
-        caption("Analiza el avance <strong>dentro de cada módulo</strong>. La gráfica global muestra el promedio de todos los alumnos por módulo. El zoom permite ver alumno por alumno.")
+        caption("Avance <strong>dentro de cada módulo</strong>. La gráfica global muestra el promedio. El zoom permite ver alumno por alumno.")
 
         if not df_pivot.empty:
-            mod_global = df_pivot.groupby("Modulo").agg(
-                Completadas=("Completadas","sum"),
-                Pendientes=("Pendientes","sum"),
-                Total=("Total modulo","first")
-            ).reset_index()
-            # Promedio de avance por módulo entre todos los alumnos
-            mod_global["% Promedio"] = (
-                df_pivot.groupby("Modulo")["% Avance"].mean().round(1).values
-            )
+            # Promedio de avance por módulo
+            mod_prom = df_pivot.groupby("Modulo")["% Avance"].mean().round(1).reset_index()
+            mod_prom.columns = ["Modulo","% Promedio"]
+            mod_pend = df_pivot.groupby("Modulo")["Pendientes"].sum().reset_index()
+            mod_global = mod_prom.merge(mod_pend, on="Modulo")
 
-            st.markdown("**% promedio de avance por módulo — todos los alumnos**")
+            st.markdown("**% promedio de avance por módulo**")
             fig_mod = go.Figure(go.Bar(
                 x=mod_global["% Promedio"], y=mod_global["Modulo"], orientation="h",
                 marker_color=bar_colors(mod_global["% Promedio"]),
                 text=[f"{p}%" for p in mod_global["% Promedio"]],
-                textposition="outside", textfont=TFONT,
-                customdata=mod_global[["Completadas","Pendientes"]],
-                hovertemplate="<b>%{y}</b><br>Completadas: %{customdata[0]}<br>Pendientes: %{customdata[1]}<extra></extra>"
+                textposition="outside",
+                textfont=dict(family="Nunito Sans", color="#3d3a35", size=12),
+                customdata=mod_global[["Pendientes"]],
+                hovertemplate="<b>%{y}</b><br>Promedio: %{x}%<br>Pendientes: %{customdata[0]}<extra></extra>"
             ))
-            fig_mod.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=TFONT, showlegend=False,
+            fig_mod.update_layout(make_layout(
                 xaxis=dict(range=[0,115], ticksuffix="%", showgrid=True,
-                           gridcolor="#f0ede8", zeroline=False, tickfont=TFONT),
-                yaxis=dict(autorange="reversed", showgrid=False, tickfont=TFONT),
-                margin=dict(t=10, b=10, l=10, r=60),
+                           gridcolor="#f0ede8", zeroline=False,
+                           tickfont=dict(family="Nunito Sans", color="#3d3a35")),
+                yaxis=dict(autorange="reversed", showgrid=False,
+                           tickfont=dict(family="Nunito Sans", color="#3d3a35")),
+                margin=dict(t=10,b=10,l=10,r=60),
                 height=max(280, len(mod_global) * 46)
-            )
+            ))
             st.plotly_chart(fig_mod, use_container_width=True)
 
             st.markdown("---")
-            st.markdown("**Zoom: avance por alumno dentro de un módulo**")
-            filtro_mod = st.selectbox("Selecciona el módulo", sorted(df_pivot["Modulo"].unique()), key="mod1")
+            st.markdown("**Zoom: alumno por alumno dentro de un módulo**")
+            filtro_mod = st.selectbox("Módulo", sorted(df_pivot["Modulo"].unique()), key="mod1")
             df_mf = df_pivot[df_pivot["Modulo"] == filtro_mod].sort_values("% Avance")
             fig_m2 = go.Figure(go.Bar(
                 x=df_mf["% Avance"], y=df_mf["Nombre"], orientation="h",
                 marker_color=bar_colors(df_mf["% Avance"]),
                 text=[f"{p}% ({int(c)}/{int(t)})" for p,c,t in zip(df_mf["% Avance"], df_mf["Completadas"], df_mf["Total modulo"])],
-                textposition="outside", textfont=TFONT
+                textposition="outside",
+                textfont=dict(family="Nunito Sans", color="#3d3a35", size=12)
             ))
-            fig_m2.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=TFONT, showlegend=False,
+            fig_m2.update_layout(make_layout(
                 xaxis=dict(range=[0,125], ticksuffix="%", showgrid=True,
-                           gridcolor="#f0ede8", zeroline=False, tickfont=TFONT),
-                yaxis=dict(showgrid=False, tickfont=TFONT),
-                margin=dict(t=10, b=10, l=10, r=110),
+                           gridcolor="#f0ede8", zeroline=False,
+                           tickfont=dict(family="Nunito Sans", color="#3d3a35")),
+                yaxis=dict(showgrid=False,
+                           tickfont=dict(family="Nunito Sans", color="#3d3a35")),
+                margin=dict(t=10,b=10,l=10,r=110),
                 height=max(300, len(df_mf) * 36)
-            )
+            ))
             st.plotly_chart(fig_m2, use_container_width=True)
 
             st.markdown("---")
             st.markdown("**Detalle de lecciones por módulo y alumno**")
             col_f1, col_f2 = st.columns(2)
             with col_f1:
-                filtro_mod2 = st.selectbox("Módulo", sorted(df_detalle["Modulo"].unique()), key="mod2")
+                mods_disponibles = sorted(df_detalle["Modulo"].unique())
+                filtro_mod2 = st.selectbox("Módulo", mods_disponibles, key="mod2")
             with col_f2:
-                alumnos_en_mod = sorted(df_detalle[df_detalle["Modulo"] == filtro_mod2]["Nombre"].unique().tolist())
-                filtro_al = st.selectbox("Alumno", ["Todos"] + alumnos_en_mod, key="al2")
-            df_det_fil = df_detalle[df_detalle["Modulo"] == filtro_mod2]
+                alumnos_mod = sorted(df_detalle[df_detalle["Modulo"]==filtro_mod2]["Nombre"].unique().tolist())
+                filtro_al   = st.selectbox("Alumno", ["Todos"] + alumnos_mod, key="al2")
+            df_det_fil = df_detalle[df_detalle["Modulo"]==filtro_mod2]
             if filtro_al != "Todos":
-                df_det_fil = df_det_fil[df_det_fil["Nombre"] == filtro_al]
-            st.dataframe(df_det_fil[["Nombre","Leccion","Completada","Fecha Completado"]], use_container_width=True, hide_index=True)
+                df_det_fil = df_det_fil[df_det_fil["Nombre"]==filtro_al]
+            st.dataframe(df_det_fil[["Nombre","Leccion","Completada","Fecha Completado"]],
+                         use_container_width=True, hide_index=True)
         else:
-            st.warning("No hay datos de módulos disponibles para los módulos seleccionados.")
+            st.warning("No hay datos de módulos disponibles.")
 
-    # ── TAB 4 ─────────────────────────────────────────────────────────────────
+    # TAB 4
     with tab4:
-        caption("Lista exacta de cada <strong>lección que cada alumno NO ha completado todavía</strong>. Filtra por alumno para ver su lista específica y hacer seguimiento personalizado.")
-
+        caption("Lista exacta de cada <strong>lección que cada alumno NO ha completado</strong>. Filtra por alumno para seguimiento personalizado.")
         if not pendientes_detalle.empty:
             filtro_alumno = st.selectbox("Filtrar por alumno",
                 ["Todos"] + sorted(pendientes_detalle["Nombre"].unique().tolist()), key="pend_al")
-            df_pf = pendientes_detalle if filtro_alumno == "Todos" else pendientes_detalle[pendientes_detalle["Nombre"] == filtro_alumno]
+            df_pf = pendientes_detalle if filtro_alumno == "Todos" else pendientes_detalle[pendientes_detalle["Nombre"]==filtro_alumno]
             st.markdown(f"**{len(df_pf)} lecciones pendientes**")
             st.dataframe(df_pf, use_container_width=True, hide_index=True)
         else:
             st.success("¡Todos los alumnos completaron todas las lecciones!")
 
-    # ── TAB 5 ─────────────────────────────────────────────────────────────────
+    # TAB 5
     with tab5:
-        caption("Tabla cruzada alumno × módulo. Cada celda muestra el <strong>% de avance de ese alumno en ese módulo específico</strong>. Permite identificar de un vistazo quién está atrasado en qué parte.")
-
+        caption("Tabla cruzada alumno × módulo. Cada celda muestra el <strong>% de avance en ese módulo específico</strong>.")
         if not tabla_cruzada.empty:
             st.dataframe(tabla_cruzada.set_index("Nombre"), use_container_width=True)
             st.caption("Valores en % completado por módulo.")
         else:
             st.warning("No hay suficientes datos para el mapa de progreso.")
 
-    # ── EXPORTAR ──────────────────────────────────────────────────────────────
+    # EXPORTAR
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
     st.markdown("<div style='height:2px; background:linear-gradient(90deg,#E8420A,#ff9a7a,transparent); border-radius:2px; margin-bottom:20px;'></div>", unsafe_allow_html=True)
 
@@ -809,19 +816,19 @@ elif st.session_state["page"] == "dashboard":
     with col_txt:
         st.markdown("""
         <p style="font-weight:800; font-size:15px; color:#1a1815; margin-bottom:4px;">Exportar informe completo</p>
-        <p style="color:#8c8880; font-size:13px; margin:0;">Excel con 5 pestañas: resumen, por módulo, tabla cruzada, pendientes y detalle completo de lecciones.</p>
+        <p style="color:#8c8880; font-size:13px; margin:0;">Excel con 5 pestañas: resumen, por módulo, tabla cruzada, pendientes y detalle completo.</p>
         """, unsafe_allow_html=True)
     with col_btn:
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            resumen.to_excel(writer,                 sheet_name="Resumen",          index=False)
+            resumen.to_excel(writer,               sheet_name="Resumen",          index=False)
             if not df_pivot.empty:
-                df_pivot.to_excel(writer,            sheet_name="Por modulo",       index=False)
+                df_pivot.to_excel(writer,          sheet_name="Por modulo",       index=False)
             if not tabla_cruzada.empty:
-                tabla_cruzada.to_excel(writer,       sheet_name="Tabla cruzada",    index=False)
+                tabla_cruzada.to_excel(writer,     sheet_name="Tabla cruzada",    index=False)
             if not pendientes_detalle.empty:
-                pendientes_detalle.to_excel(writer,  sheet_name="Pendientes",       index=False)
-            df_detalle.to_excel(writer,              sheet_name="Detalle completo", index=False)
+                pendientes_detalle.to_excel(writer, sheet_name="Pendientes",      index=False)
+            df_detalle.to_excel(writer,            sheet_name="Detalle completo", index=False)
         buffer.seek(0)
         st.download_button(
             label="📥 Descargar Excel",
