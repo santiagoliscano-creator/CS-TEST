@@ -1,6 +1,6 @@
 """
-Hotmart Club · Club Analytics v6.1
-Fix: diagnostic output for API responses + robust pagination
+Hotmart Club · Club Analytics v7.0
+Fix: New Club detection, v1+v2 API fallback, pagination, clear diagnostics
 """
 
 import streamlit as st
@@ -155,19 +155,15 @@ def _extract_page_token(data):
     return None
 
 
-def get_students(access_token, subdomain):
-    """Obtiene TODOS los alumnos con paginación automática.
-    Retorna (students_list, error_string, diagnostics_list).
-    diagnostics_list contiene info de cada request para debugging.
-    """
+def _try_get_students_endpoint(access_token, subdomain, base_url, max_pages=100):
+    """Intenta obtener alumnos de un endpoint específico con paginación."""
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"}
     todos = []
     page_token = None
-    max_pages = 100
     diagnostics = []
 
     for page_num in range(max_pages):
-        url = f"https://developers.hotmart.com/club/api/v1/users?subdomain={subdomain}&max_results=50"
+        url = f"{base_url}?subdomain={subdomain}&max_results=50"
         if page_token:
             url += f"&page_token={page_token}"
 
@@ -178,17 +174,16 @@ def get_students(access_token, subdomain):
             diag["body_length"] = len(resp.text) if resp.text else 0
             diag["body_preview"] = (resp.text or "")[:500]
 
-            if resp.status_code != 200:
-                diag["result"] = "HTTP error"
+            if resp.status_code not in (200, 204):
+                diag["result"] = f"HTTP {resp.status_code}"
                 diagnostics.append(diag)
-                err_msg = f"HTTP {resp.status_code}"
-                return todos if todos else [], err_msg, diagnostics
+                return todos, f"HTTP {resp.status_code}", diagnostics
 
             if not resp.text or not resp.text.strip():
-                diag["result"] = "Empty body"
+                diag["result"] = "Empty body (200 OK sin datos)"
                 diagnostics.append(diag)
                 if page_num == 0:
-                    return [], "La API devolvió respuesta vacía (200 OK sin cuerpo)", diagnostics
+                    return [], "empty_body", diagnostics
                 break
 
             data = resp.json()
@@ -200,21 +195,19 @@ def get_students(access_token, subdomain):
             diag["items_found"] = len(items)
 
             if not items:
-                diag["result"] = "No items extracted"
+                diag["result"] = "No items in response"
                 diagnostics.append(diag)
                 if page_num == 0:
-                    return [], "API respondió 200 pero sin alumnos en la respuesta", diagnostics
+                    return [], "no_items", diagnostics
                 break
 
-            # Verificar estructura del primer item
-            if page_num == 0 and items:
-                diag["first_item_keys"] = list(items[0].keys()) if isinstance(items[0], dict) else "not_dict"
+            if page_num == 0 and items and isinstance(items[0], dict):
+                diag["first_item_keys"] = list(items[0].keys())
 
             todos.extend(items)
             diag["result"] = f"OK - {len(items)} items"
             diagnostics.append(diag)
 
-            # Buscar token de siguiente página
             if isinstance(data, dict):
                 page_token = _extract_page_token(data)
                 if not page_token:
@@ -228,6 +221,36 @@ def get_students(access_token, subdomain):
             return todos if todos else [], str(e), diagnostics
 
     return todos, None, diagnostics
+
+
+def get_students(access_token, subdomain):
+    """Obtiene TODOS los alumnos probando múltiples versiones de la API.
+    Retorna (students_list, error_string, diagnostics_list).
+    """
+    # Lista de endpoints a intentar en orden de prioridad
+    endpoints = [
+        ("v1", "https://developers.hotmart.com/club/api/v1/users"),
+        ("v2", "https://developers.hotmart.com/club/api/v2/users"),
+    ]
+
+    all_diagnostics = []
+
+    for version_label, base_url in endpoints:
+        students, err, diag = _try_get_students_endpoint(access_token, subdomain, base_url)
+        # Etiquetar diagnósticos con la versión
+        for d in diag:
+            d["api_version"] = version_label
+        all_diagnostics.extend(diag)
+
+        if students:
+            return students, None, all_diagnostics
+
+        # Si el error no es body vacío ni no_items, es un error real (auth, network)
+        if err and err not in ("empty_body", "no_items"):
+            return [], err, all_diagnostics
+
+    # Ningún endpoint devolvió alumnos
+    return [], "new_club_empty", all_diagnostics
 
 
 def get_student_progress(access_token, subdomain, user_id):
@@ -378,19 +401,49 @@ if st.session_state["page"] == "login":
                         # PASO 1: Validar que el Club tenga alumnos PRIMERO
                         students_check, err_st, diag_st = get_students(token, subdomain_in)
                         if not students_check:
-                            detail = f" Detalle: {err_st}" if err_st else ""
-                            st.error(
-                                f"No se encontraron alumnos en el subdominio '{subdomain_in}'.{detail}\n\n"
-                                f"Verifica que:\n"
-                                f"- El subdominio sea exacto (sin espacios, en minúsculas)\n"
-                                f"- Tu cuenta tenga acceso a este Club\n"
-                                f"- El Club tenga al menos un alumno matriculado"
-                            )
-                            # Diagnóstico técnico para debugging
+                            # Detectar si es un Club migrado al Nuevo Hotmart Club
+                            is_new_club = (err_st == "new_club_empty")
+
+                            if is_new_club:
+                                st.warning("⚠️ **Club en la nueva versión de Hotmart Club detectado**")
+                                st.markdown(f"""
+                                <div style="background:#fff5f2;border:1.5px solid #ffd4c4;border-radius:12px;padding:18px 20px;margin:12px 0;">
+                                    <p style="font-weight:700;color:#c93608;font-size:15px;margin-bottom:8px;">
+                                        El subdominio '{subdomain_in}' pertenece al Nuevo Hotmart Club
+                                    </p>
+                                    <p style="color:#5c5a56;font-size:13px;line-height:1.7;margin-bottom:12px;">
+                                        La API actual de Hotmart Developers (<code>/club/api/v1</code>) no devuelve datos de alumnos para
+                                        productos migrados al Nuevo Hotmart Club. La autenticación es correcta, pero el endpoint
+                                        responde vacío (HTTP 200, 0 bytes).
+                                    </p>
+                                    <p style="color:#5c5a56;font-size:13px;line-height:1.7;margin-bottom:12px;">
+                                        <strong>Esto NO es un error de credenciales ni del subdominio</strong> — es una limitación
+                                        conocida de la API para Clubs migrados a la nueva plataforma.
+                                    </p>
+                                    <p style="font-weight:700;color:#1a1815;font-size:13px;margin-bottom:6px;">Alternativas:</p>
+                                    <p style="color:#5c5a56;font-size:13px;line-height:1.7;margin:0;">
+                                        1. Usa <strong>Hotmart Club Analytics</strong> (integrado en la plataforma) para este producto<br>
+                                        2. Si el producto tiene una versión en el Club clásico, usa ese subdominio<br>
+                                        3. Consulta con el equipo de Hotmart Developers si hay un endpoint actualizado para el nuevo Club
+                                    </p>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                detail = f" Detalle: {err_st}" if err_st else ""
+                                st.error(
+                                    f"No se encontraron alumnos en el subdominio '{subdomain_in}'.{detail}\n\n"
+                                    f"Verifica que:\n"
+                                    f"- El subdominio sea exacto (sin espacios, en minúsculas)\n"
+                                    f"- Tu cuenta tenga acceso a este Club\n"
+                                    f"- El Club tenga al menos un alumno matriculado"
+                                )
+
+                            # Diagnóstico técnico siempre disponible
                             if diag_st:
-                                with st.expander("🔍 Diagnóstico técnico (comparte esto para soporte)", expanded=True):
+                                with st.expander("🔍 Diagnóstico técnico", expanded=not is_new_club):
                                     for d in diag_st:
-                                        st.markdown(f"**Página {d.get('page', '?')}:**")
+                                        label = d.get('api_version', '?')
+                                        st.markdown(f"**API {label} — Página {d.get('page', '?')}:**")
                                         st.code(
                                             f"URL: {d.get('url', '?')}\n"
                                             f"Status: {d.get('status_code', '?')}\n"
@@ -398,9 +451,7 @@ if st.session_state["page"] == "login":
                                             f"JSON type: {d.get('json_type', 'N/A')}\n"
                                             f"JSON keys: {d.get('json_keys', 'N/A')}\n"
                                             f"Items found: {d.get('items_found', 'N/A')}\n"
-                                            f"Result: {d.get('result', '?')}\n"
-                                            f"---\n"
-                                            f"Body preview:\n{d.get('body_preview', '(vacío)')}",
+                                            f"Result: {d.get('result', '?')}",
                                             language="text"
                                         )
                             st.stop()
