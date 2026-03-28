@@ -1,6 +1,6 @@
 """
-Hotmart Club · Club Analytics v6.0
-Fix: robust pagination + response parsing + validation order
+Hotmart Club · Club Analytics v6.1
+Fix: diagnostic output for API responses + robust pagination
 """
 
 import streamlit as st
@@ -156,33 +156,63 @@ def _extract_page_token(data):
 
 
 def get_students(access_token, subdomain):
-    """Obtiene TODOS los alumnos con paginación automática."""
+    """Obtiene TODOS los alumnos con paginación automática.
+    Retorna (students_list, error_string, diagnostics_list).
+    diagnostics_list contiene info de cada request para debugging.
+    """
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"}
     todos = []
     page_token = None
-    max_pages = 100  # suficiente para ~5000 alumnos
+    max_pages = 100
+    diagnostics = []
 
     for page_num in range(max_pages):
         url = f"https://developers.hotmart.com/club/api/v1/users?subdomain={subdomain}&max_results=50"
         if page_token:
             url += f"&page_token={page_token}"
+
+        diag = {"page": page_num + 1, "url": url}
         try:
             resp = requests.get(url, headers=headers, timeout=20)
+            diag["status_code"] = resp.status_code
+            diag["body_length"] = len(resp.text) if resp.text else 0
+            diag["body_preview"] = (resp.text or "")[:500]
+
             if resp.status_code != 200:
-                err_msg = f"HTTP {resp.status_code}: {resp.text[:300]}"
-                return todos if todos else [], err_msg
+                diag["result"] = "HTTP error"
+                diagnostics.append(diag)
+                err_msg = f"HTTP {resp.status_code}"
+                return todos if todos else [], err_msg, diagnostics
+
             if not resp.text or not resp.text.strip():
+                diag["result"] = "Empty body"
+                diagnostics.append(diag)
+                if page_num == 0:
+                    return [], "La API devolvió respuesta vacía (200 OK sin cuerpo)", diagnostics
                 break
+
             data = resp.json()
+            diag["json_type"] = type(data).__name__
+            if isinstance(data, dict):
+                diag["json_keys"] = list(data.keys())
 
             items = _extract_items_from_response(data)
+            diag["items_found"] = len(items)
+
             if not items:
-                # Si es la primera página y no hay items, devolver vacío
+                diag["result"] = "No items extracted"
+                diagnostics.append(diag)
                 if page_num == 0:
-                    return [], f"Respuesta vacía de la API. Cuerpo: {resp.text[:300]}"
+                    return [], "API respondió 200 pero sin alumnos en la respuesta", diagnostics
                 break
 
+            # Verificar estructura del primer item
+            if page_num == 0 and items:
+                diag["first_item_keys"] = list(items[0].keys()) if isinstance(items[0], dict) else "not_dict"
+
             todos.extend(items)
+            diag["result"] = f"OK - {len(items)} items"
+            diagnostics.append(diag)
 
             # Buscar token de siguiente página
             if isinstance(data, dict):
@@ -190,12 +220,14 @@ def get_students(access_token, subdomain):
                 if not page_token:
                     break
             else:
-                break  # lista plana = sin paginación
+                break
 
         except Exception as e:
-            return todos if todos else [], str(e)
+            diag["result"] = f"Exception: {str(e)}"
+            diagnostics.append(diag)
+            return todos if todos else [], str(e), diagnostics
 
-    return todos, None
+    return todos, None, diagnostics
 
 
 def get_student_progress(access_token, subdomain, user_id):
@@ -344,7 +376,7 @@ if st.session_state["page"] == "login":
                         st.error(f"Credenciales incorrectas: {err}")
                     else:
                         # PASO 1: Validar que el Club tenga alumnos PRIMERO
-                        students_check, err_st = get_students(token, subdomain_in)
+                        students_check, err_st, diag_st = get_students(token, subdomain_in)
                         if not students_check:
                             detail = f" Detalle: {err_st}" if err_st else ""
                             st.error(
@@ -354,6 +386,23 @@ if st.session_state["page"] == "login":
                                 f"- Tu cuenta tenga acceso a este Club\n"
                                 f"- El Club tenga al menos un alumno matriculado"
                             )
+                            # Diagnóstico técnico para debugging
+                            if diag_st:
+                                with st.expander("🔍 Diagnóstico técnico (comparte esto para soporte)", expanded=True):
+                                    for d in diag_st:
+                                        st.markdown(f"**Página {d.get('page', '?')}:**")
+                                        st.code(
+                                            f"URL: {d.get('url', '?')}\n"
+                                            f"Status: {d.get('status_code', '?')}\n"
+                                            f"Body length: {d.get('body_length', '?')} chars\n"
+                                            f"JSON type: {d.get('json_type', 'N/A')}\n"
+                                            f"JSON keys: {d.get('json_keys', 'N/A')}\n"
+                                            f"Items found: {d.get('items_found', 'N/A')}\n"
+                                            f"Result: {d.get('result', '?')}\n"
+                                            f"---\n"
+                                            f"Body preview:\n{d.get('body_preview', '(vacío)')}",
+                                            language="text"
+                                        )
                             st.stop()
 
                         # PASO 2: Intentar obtener módulos vía endpoint directo
@@ -476,7 +525,7 @@ elif st.session_state["page"] == "loading":
         status_txt = st.empty()
         prog_bar   = st.progress(0)
 
-    students, err2 = get_students(token, subdomain)
+    students, err2, _ = get_students(token, subdomain)
     if not students:
         with col_c:
             st.error(f"No se pudo obtener la lista de alumnos: {err2}")
