@@ -1,6 +1,6 @@
 """
-Hotmart Club · Club Analytics v5.4
-Fix: titlefont deprecated in plotly, better module fallback
+Hotmart Club · Club Analytics v5.5
+Fix: full pagination in get_students
 """
 
 import streamlit as st
@@ -45,7 +45,7 @@ footer { display:none !important; }
     border-radius:10px !important; font-weight:700 !important; font-size:15px !important;
     padding:12px 28px !important; box-shadow:0 4px 15px rgba(232,66,10,0.3) !important;
 }
-.stButton > button[kind="primary"]:hover { background:#c93608 !important; transform:translateY(-1px) !important; }
+.stButton > button[kind="primary"]:hover { background:#c93608 !important; }
 .stButton > button:not([kind="primary"]) {
     background:white !important; color:#E8420A !important;
     border:2px solid #E8420A !important; border-radius:10px !important; font-weight:700 !important;
@@ -85,6 +85,7 @@ def get_access_token(basic_token, client_id, client_secret):
     except Exception as e:
         return None, str(e)
 
+
 def get_modules(access_token, subdomain, is_extra=False):
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"}
     url = f"https://developers.hotmart.com/club/api/v1/modules?subdomain={subdomain}&is_extra={str(is_extra).lower()}"
@@ -99,6 +100,7 @@ def get_modules(access_token, subdomain, is_extra=False):
         return [], f"HTTP {resp.status_code}"
     except Exception as e:
         return [], str(e)
+
 
 def get_pages_for_module(access_token, subdomain, module_id):
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"}
@@ -115,20 +117,50 @@ def get_pages_for_module(access_token, subdomain, module_id):
     except Exception as e:
         return [], str(e)
 
+
 def get_students(access_token, subdomain):
+    """Obtiene TODOS los alumnos con paginación automática."""
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"}
-    url = f"https://developers.hotmart.com/club/api/v1/users?subdomain={subdomain}"
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code == 200:
-            if not resp.text or not resp.text.strip(): return [], "Respuesta vacia"
+    todos = []
+    page_token = None
+    max_pages = 50  # seguro para evitar loops infinitos
+
+    for _ in range(max_pages):
+        url = f"https://developers.hotmart.com/club/api/v1/users?subdomain={subdomain}&max_results=50"
+        if page_token:
+            url += f"&page_token={page_token}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=20)
+            if resp.status_code != 200:
+                return todos if todos else [], f"HTTP {resp.status_code}: {resp.text[:200]}"
+            if not resp.text or not resp.text.strip():
+                break
             data = resp.json()
-            if isinstance(data, list): return data, None
-            elif isinstance(data, dict) and "items" in data: return data["items"], None
-            elif isinstance(data, dict): return list(data.values())[0] if data else [], None
-        return [], f"HTTP {resp.status_code}: {resp.text[:200]}"
-    except Exception as e:
-        return [], str(e)
+            if isinstance(data, list):
+                todos.extend(data)
+                break  # lista plana = sin paginación
+            elif isinstance(data, dict):
+                items = data.get("items", data.get("users", data.get("content", [])))
+                if not items:
+                    break
+                todos.extend(items)
+                # Buscar token de siguiente página en varios formatos posibles
+                page_token = (
+                    data.get("next_page_token") or
+                    data.get("nextPageToken") or
+                    data.get("page_token") or
+                    data.get("cursor") or
+                    None
+                )
+                if not page_token:
+                    break
+            else:
+                break
+        except Exception as e:
+            return todos if todos else [], str(e)
+
+    return todos, None
+
 
 def get_student_progress(access_token, subdomain, user_id):
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"}
@@ -147,6 +179,19 @@ def get_student_progress(access_token, subdomain, user_id):
         return [], str(e)
 
 
+def extraer_modulos_desde_alumnos(token, subdomain, students, max_alumnos=30):
+    nombres = set()
+    for s in (students or [])[:max_alumnos]:
+        uid = s.get("user_id", s.get("id", ""))
+        if not uid: continue
+        lecs, _ = get_student_progress(token, subdomain, uid)
+        for l in (lecs or []):
+            m = l.get("module_name", "")
+            if m: nombres.add(m)
+        if nombres: time.sleep(0.1)
+    return sorted(nombres)
+
+
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 def estado_riesgo(pct):
@@ -162,11 +207,9 @@ COLOR_MAP = {
     "Avanzado":      "#b83208"
 }
 
-# Fuente para gráficas — sin titlefont (deprecado)
 TFONT = dict(family="Nunito Sans", color="#3d3a35", size=12)
 
 def make_layout(**kwargs):
-    """Layout base para todas las gráficas — sin parámetros deprecados."""
     base = dict(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -192,20 +235,6 @@ def calcular_abandono(df_alumno):
     la = pendientes.iloc[0]["Leccion"]           if not pendientes.empty else "Completado ✓"
     return ul, um, uf, ma, la
 
-def extraer_modulos_desde_alumnos(token, subdomain, students, max_alumnos=30):
-    """Fallback: extrae nombres de módulos del progreso de los alumnos."""
-    nombres_tmp = set()
-    for s in (students or [])[:max_alumnos]:
-        uid = s.get("user_id", s.get("id", ""))
-        if not uid: continue
-        lecs, _ = get_student_progress(token, subdomain, uid)
-        for l in (lecs or []):
-            m = l.get("module_name", "")
-            if m: nombres_tmp.add(m)
-        if len(nombres_tmp) > 0:
-            time.sleep(0.1)
-    return sorted(nombres_tmp)
-
 
 # ─── SESSION STATE ────────────────────────────────────────────────────────────
 
@@ -224,7 +253,6 @@ if st.session_state["page"] == "login":
     _, col_c, _ = st.columns([1, 1.1, 1])
     with col_c:
         st.markdown("<div style='height:48px'></div>", unsafe_allow_html=True)
-
         st.markdown("""
         <div style="text-align:center; margin-bottom:28px;">
             <div style="display:inline-flex; align-items:center; justify-content:center;
@@ -256,7 +284,7 @@ if st.session_state["page"] == "login":
                 ¿Cómo obtener mis credenciales?<br>
                 Entra a <strong style="color:#E8420A;">developers.hotmart.com</strong>
                 → crea una aplicación → copia tus credenciales.<br>
-                <strong>Las mismas credenciales sirven para todos tus Clubs.</strong>
+                Las mismas credenciales sirven para todos tus Clubs.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -270,7 +298,6 @@ if st.session_state["page"] == "login":
                     if err:
                         st.error(f"Credenciales incorrectas: {err}")
                     else:
-                        # Intentar cargar módulos via API
                         mods_main, _  = get_modules(token, subdomain_in, is_extra=False)
                         mods_extra, _ = get_modules(token, subdomain_in, is_extra=True)
                         todos = mods_main + mods_extra
@@ -284,17 +311,13 @@ if st.session_state["page"] == "login":
                                 total_pages = len([p for p in pages if p.get("type","CONTENT") != "ADVERTISEMENT"]) if pages else 0
                                 modulo_info[name] = {"module_id": mid, "total_pages": total_pages, "is_extra": m.get("is_extra", False)}
                         else:
-                            # Fallback: extraer módulos desde los alumnos
                             students_tmp, err_st = get_students(token, subdomain_in)
                             if not students_tmp:
-                                st.error(f"No se encontraron alumnos en el subdominio '{subdomain_in}'. Verifica que el subdominio sea correcto y que esta cuenta tenga acceso a ese Club.")
+                                st.error(f"No se encontraron alumnos en '{subdomain_in}'. Verifica que el subdominio sea correcto y que esta cuenta tenga acceso a ese Club.")
                                 st.stop()
-
                             nombres_tmp = extraer_modulos_desde_alumnos(token, subdomain_in, students_tmp, max_alumnos=30)
-
                             if not nombres_tmp:
-                                # Último recurso: crear un módulo genérico para que pueda continuar
-                                st.warning(f"No se pudieron detectar módulos automáticamente para '{subdomain_in}'. Se cargará el Club completo sin filtro de módulos.")
+                                st.warning(f"No se detectaron módulos. Se cargará el Club completo.")
                                 modulo_info["Contenido del Club"] = {"module_id": "", "total_pages": 0, "is_extra": False}
                             else:
                                 for nombre in nombres_tmp:
@@ -321,21 +344,15 @@ elif st.session_state["page"] == "selector":
     club_name   = st.session_state["club_name"]
 
     st.markdown(f"""
-    <div style="display:flex; align-items:center; gap:14px; padding:20px 0 28px;
-                border-bottom:2px solid #f0ede8; margin-bottom:32px;">
-        <div style="width:42px; height:42px; background:#E8420A; border-radius:12px;
-                    display:flex; align-items:center; justify-content:center;
-                    box-shadow:0 4px 12px rgba(232,66,10,0.3); font-size:20px;">🔥</div>
+    <div style="display:flex;align-items:center;gap:14px;padding:20px 0 28px;border-bottom:2px solid #f0ede8;margin-bottom:32px;">
+        <div style="width:42px;height:42px;background:#E8420A;border-radius:12px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(232,66,10,0.3);font-size:20px;">🔥</div>
         <div>
-            <div style="font-weight:800; font-size:20px; color:#1a1815;">Club Analytics</div>
-            <div style="font-size:13px; color:#8c8880;">{club_name} · {len(modulo_info)} módulos encontrados</div>
+            <div style="font-weight:800;font-size:20px;color:#1a1815;">Club Analytics</div>
+            <div style="font-size:13px;color:#8c8880;">{club_name} · {len(modulo_info)} módulos encontrados</div>
         </div>
     </div>
-    <h2 style="font-weight:800; font-size:22px; color:#1a1815; margin-bottom:8px;">¿Qué producto quieres analizar?</h2>
-    <p style="color:#8c8880; font-size:14px; margin-bottom:28px;">
-        Selecciona los módulos del producto que quieres revisar.
-        Si tu Club tiene un solo producto, selecciónalos todos.
-    </p>
+    <h2 style="font-weight:800;font-size:22px;color:#1a1815;margin-bottom:8px;">¿Qué producto quieres analizar?</h2>
+    <p style="color:#8c8880;font-size:14px;margin-bottom:28px;">Selecciona los módulos del producto que quieres revisar. Si hay un solo producto, selecciónalos todos.</p>
     """, unsafe_allow_html=True)
 
     col_sel, col_prev = st.columns([1.3, 1])
@@ -345,10 +362,9 @@ elif st.session_state["page"] == "selector":
         total_lec = sum(modulo_info[m]["total_pages"] for m in seleccionados)
         if seleccionados:
             st.markdown(f"""
-            <div style="background:linear-gradient(135deg,#fff5f2,#fff); border:1.5px solid #ffd4c4;
-                        border-radius:14px; padding:18px 20px; margin-top:16px;">
-                <div style="font-size:11px; color:#E8420A; font-weight:800; letter-spacing:0.08em; margin-bottom:4px;">SELECCIÓN ACTUAL</div>
-                <div style="font-size:24px; font-weight:800; color:#1a1815;">{len(seleccionados)} módulos</div>
+            <div style="background:linear-gradient(135deg,#fff5f2,#fff);border:1.5px solid #ffd4c4;border-radius:14px;padding:18px 20px;margin-top:16px;">
+                <div style="font-size:11px;color:#E8420A;font-weight:800;letter-spacing:0.08em;margin-bottom:4px;">SELECCIÓN ACTUAL</div>
+                <div style="font-size:24px;font-weight:800;color:#1a1815;">{len(seleccionados)} módulos</div>
                 {'<div style="font-size:14px;color:#8c8880;margin-top:2px;">' + str(total_lec) + ' lecciones en total</div>' if total_lec > 0 else ''}
             </div>""", unsafe_allow_html=True)
 
@@ -361,8 +377,7 @@ elif st.session_state["page"] == "selector":
             border = "#ffd4c4" if activo else "#f0ede8"
             dot    = "#E8420A" if activo else "#d0cdc8"
             st.markdown(f"""
-            <div style="background:{bg};border:1.5px solid {border};border-radius:10px;
-                        padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px;">
+            <div style="background:{bg};border:1.5px solid {border};border-radius:10px;padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px;">
                 <div style="width:8px;height:8px;border-radius:50%;background:{dot};flex-shrink:0;"></div>
                 <div>
                     <div style="font-weight:700;font-size:13px;color:#1a1815;">{nombre}</div>
@@ -391,16 +406,16 @@ elif st.session_state["page"] == "loading":
     modulo_info = st.session_state["modulo_info"]
     subdomain   = st.session_state["subdomain"]
     modulos_sel = st.session_state["modulos_seleccionados"]
-    usar_filtro_modulos = modulos_sel != ["Contenido del Club"]
+    usar_filtro = modulos_sel != ["Contenido del Club"]
 
     _, col_c, _ = st.columns([1, 1.5, 1])
     with col_c:
         st.markdown("<div style='height:80px'></div>", unsafe_allow_html=True)
         st.markdown("""
-        <div style="text-align:center; margin-bottom:32px;">
-            <div style="font-size:40px; margin-bottom:16px;">🔥</div>
-            <h2 style="font-weight:800; font-size:22px; color:#1a1815; margin-bottom:8px;">Analizando tu Club...</h2>
-            <p style="color:#8c8880; font-size:14px;">Extrayendo el progreso de cada alumno.</p>
+        <div style="text-align:center;margin-bottom:32px;">
+            <div style="font-size:40px;margin-bottom:16px;">🔥</div>
+            <h2 style="font-weight:800;font-size:22px;color:#1a1815;margin-bottom:8px;">Analizando tu Club...</h2>
+            <p style="color:#8c8880;font-size:14px;">Extrayendo el progreso de cada alumno.</p>
         </div>""", unsafe_allow_html=True)
         status_txt = st.empty()
         prog_bar   = st.progress(0)
@@ -440,13 +455,11 @@ elif st.session_state["page"] == "loading":
                 "Pct Hotmart": pct_hotmart, "Completadas Hotmart": comp_hotmart,
                 "Total Hotmart": total_hotmart
             })
-            time.sleep(0.15); continue
+            time.sleep(0.1); continue
 
         for l in lecciones:
             mn = l.get("module_name", "Sin modulo")
-            # Si el módulo es "Contenido del Club" (fallback), no filtramos
-            if usar_filtro_modulos and mn not in modulos_sel:
-                continue
+            if usar_filtro and mn not in modulos_sel: continue
             fecha = ""
             if l.get("completed_date"):
                 try: fecha = datetime.fromtimestamp(l["completed_date"] / 1000).strftime("%d/%m/%Y")
@@ -460,7 +473,7 @@ elif st.session_state["page"] == "loading":
                 "Completadas Hotmart": comp_hotmart,
                 "Total Hotmart": total_hotmart
             })
-        time.sleep(0.15)
+        time.sleep(0.1)
 
     prog_bar.progress(1.0)
     status_txt.markdown("<p style='text-align:center;color:#1aab6d;font-size:14px;font-weight:800;'>✓ ¡Análisis completado!</p>", unsafe_allow_html=True)
@@ -468,7 +481,6 @@ elif st.session_state["page"] == "loading":
     df         = pd.DataFrame(all_data)
     df_activos = df[df["Modulo"] != "Sin actividad"]
 
-    # Resumen por alumno — 100% datos Hotmart
     resumen_rows = []
     for nombre, grupo in df.groupby("Nombre"):
         email         = grupo["Email"].iloc[0]
@@ -498,9 +510,9 @@ elif st.session_state["page"] == "loading":
 
     resumen = pd.DataFrame(resumen_rows)
 
-    # Pivot por módulo
     pivot_rows = []
-    for m in (df_activos["Modulo"].unique() if not usar_filtro_modulos else modulos_sel):
+    modulos_para_pivot = df_activos["Modulo"].unique() if not usar_filtro else modulos_sel
+    for m in modulos_para_pivot:
         total_m_real = modulo_info.get(m, {}).get("total_pages", 0)
         df_m = df_activos[df_activos["Modulo"] == m]
         for nombre, g in df_m.groupby("Nombre"):
@@ -525,7 +537,7 @@ elif st.session_state["page"] == "loading":
         "df": df, "df_detalle": df_detalle, "resumen": resumen,
         "df_pivot": df_pivot, "tabla_cruzada": tabla_cruzada,
         "pendientes_detalle": pendientes_detalle, "errores": errores,
-        "modulos_sel": modulos_sel
+        "modulos_sel": modulos_sel, "total_alumnos_raw": len(students)
     }
     time.sleep(0.4)
     st.session_state["page"] = "dashboard"
@@ -547,6 +559,7 @@ elif st.session_state["page"] == "dashboard":
     pendientes_detalle = data["pendientes_detalle"]
     errores            = data["errores"]
     modulos_sel        = data["modulos_sel"]
+    total_alumnos_raw  = data["total_alumnos_raw"]
     subdomain          = st.session_state["subdomain"]
     club_name          = st.session_state["club_name"]
 
@@ -562,16 +575,13 @@ elif st.session_state["page"] == "dashboard":
     with col_h1:
         st.markdown(f"""
         <div style="padding:20px 0 24px;">
-            <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px;">
-                <div style="width:38px; height:38px; background:#E8420A; border-radius:10px;
-                            display:flex; align-items:center; justify-content:center;
-                            box-shadow:0 3px 10px rgba(232,66,10,0.3); font-size:18px;">🔥</div>
-                <span style="font-weight:800; font-size:22px; color:#1a1815;">Club Analytics</span>
-                <span style="background:#fff5f2; color:#E8420A; border:1px solid #ffd4c4;
-                             border-radius:20px; padding:3px 12px; font-size:12px; font-weight:700;">{club_name}</span>
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;">
+                <div style="width:38px;height:38px;background:#E8420A;border-radius:10px;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 10px rgba(232,66,10,0.3);font-size:18px;">🔥</div>
+                <span style="font-weight:800;font-size:22px;color:#1a1815;">Club Analytics</span>
+                <span style="background:#fff5f2;color:#E8420A;border:1px solid #ffd4c4;border-radius:20px;padding:3px 12px;font-size:12px;font-weight:700;">{club_name}</span>
             </div>
-            <p style="color:#8c8880; font-size:13px; margin:0;">
-                Generado el {datetime.now().strftime('%d/%m/%Y · %H:%M')}
+            <p style="color:#8c8880;font-size:13px;margin:0;">
+                {total_alumnos_raw} alumnos extraídos · Generado el {datetime.now().strftime('%d/%m/%Y · %H:%M')}
             </p>
         </div>""", unsafe_allow_html=True)
     with col_h2:
@@ -581,7 +591,7 @@ elif st.session_state["page"] == "dashboard":
             st.session_state["dashboard_data"] = None
             st.rerun()
 
-    st.markdown("<div style='height:2px; background:linear-gradient(90deg,#E8420A,#ff9a7a,transparent); border-radius:2px; margin-bottom:28px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:2px;background:linear-gradient(90deg,#E8420A,#ff9a7a,transparent);border-radius:2px;margin-bottom:28px;'></div>", unsafe_allow_html=True)
 
     # KPIs
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -593,10 +603,9 @@ elif st.session_state["page"] == "dashboard":
 
     if sin_actividad > 0:
         st.markdown(f"""
-        <div style="background:#fff5f2; border:1.5px solid #ffd4c4; border-radius:12px;
-                    padding:12px 18px; margin-top:12px; display:flex; align-items:center; gap:10px;">
+        <div style="background:#fff5f2;border:1.5px solid #ffd4c4;border-radius:12px;padding:12px 18px;margin-top:12px;display:flex;align-items:center;gap:10px;">
             <span style="font-size:18px;">🚨</span>
-            <span style="font-size:14px; color:#c93608; font-weight:700;">
+            <span style="font-size:14px;color:#c93608;font-weight:700;">
                 {sin_actividad} alumno{'s' if sin_actividad > 1 else ''} con 0% de avance — riesgo de churn
             </span>
         </div>""", unsafe_allow_html=True)
@@ -607,7 +616,6 @@ elif st.session_state["page"] == "dashboard":
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    # TABS
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 Resumen general",
         "🎯 Punto de abandono",
@@ -616,7 +624,6 @@ elif st.session_state["page"] == "dashboard":
         "🗺️ Mapa"
     ])
 
-    # TAB 1
     with tab1:
         caption("Vista global del Club. El <strong>% de avance</strong> es el dato oficial de Hotmart por alumno.")
         col_l, col_r = st.columns(2)
@@ -648,13 +655,11 @@ elif st.session_state["page"] == "dashboard":
                 hovertemplate="<b>%{y}</b><br>%{x}% · %{customdata[0]}/%{customdata[1]} lecciones<extra></extra>"
             ))
             fig_a.update_layout(make_layout(
-                xaxis=dict(range=[0,115], ticksuffix="%", showgrid=True,
-                           gridcolor="#f0ede8", zeroline=False,
-                           tickfont=dict(family="Nunito Sans", color="#3d3a35")),
-                yaxis=dict(showgrid=False,
-                           tickfont=dict(family="Nunito Sans", color="#3d3a35")),
+                xaxis=dict(range=[0,115], ticksuffix="%", showgrid=True, gridcolor="#f0ede8",
+                           zeroline=False, tickfont=dict(family="Nunito Sans", color="#3d3a35")),
+                yaxis=dict(showgrid=False, tickfont=dict(family="Nunito Sans", color="#3d3a35")),
                 margin=dict(t=10,b=10,l=10,r=60),
-                height=max(300, total_alumnos * 34)
+                height=max(300, total_alumnos * 28)
             ))
             st.plotly_chart(fig_a, use_container_width=True)
 
@@ -664,11 +669,10 @@ elif st.session_state["page"] == "dashboard":
             use_container_width=True, hide_index=True
         )
 
-    # TAB 2
     with tab2:
-        caption("Muestra <strong>dónde exactamente paró cada alumno</strong>: la última lección completada y el primer módulo con pendientes.")
+        caption("Muestra <strong>dónde exactamente paró cada alumno</strong>: última lección completada y el módulo donde dejó de avanzar.")
 
-        col_a, col_b = st.columns([1, 1])
+        col_a, col_b = st.columns([1,1])
         with col_a:
             st.markdown("**Alumnos con 0% de avance**")
             sin_act = resumen[resumen["Estado"] == "Sin actividad"][["Nombre","Email"]]
@@ -691,10 +695,9 @@ elif st.session_state["page"] == "dashboard":
                     ))
                     fig_ab.update_layout(make_layout(
                         xaxis=dict(
-                            title=dict(text="Lecciones pendientes acumuladas",
+                            title=dict(text="Lecciones pendientes",
                                        font=dict(family="Nunito Sans", color="#8c8880", size=11)),
-                            tickfont=dict(family="Nunito Sans", color="#3d3a35"),
-                            zeroline=False
+                            tickfont=dict(family="Nunito Sans", color="#3d3a35"), zeroline=False
                         ),
                         yaxis=dict(autorange="reversed",
                                    tickfont=dict(family="Nunito Sans", color="#3d3a35")),
@@ -716,35 +719,28 @@ elif st.session_state["page"] == "dashboard":
         else:
             st.info("No hay datos de detalle disponibles.")
 
-    # TAB 3
     with tab3:
-        caption("Avance <strong>dentro de cada módulo</strong>. La gráfica global muestra el promedio. El zoom permite ver alumno por alumno.")
+        caption("Avance <strong>dentro de cada módulo</strong>. El zoom permite ver alumno por alumno en un módulo específico.")
 
         if not df_pivot.empty:
-            # Promedio de avance por módulo
             mod_prom = df_pivot.groupby("Modulo")["% Avance"].mean().round(1).reset_index()
             mod_prom.columns = ["Modulo","% Promedio"]
-            mod_pend = df_pivot.groupby("Modulo")["Pendientes"].sum().reset_index()
-            mod_global = mod_prom.merge(mod_pend, on="Modulo")
 
             st.markdown("**% promedio de avance por módulo**")
             fig_mod = go.Figure(go.Bar(
-                x=mod_global["% Promedio"], y=mod_global["Modulo"], orientation="h",
-                marker_color=bar_colors(mod_global["% Promedio"]),
-                text=[f"{p}%" for p in mod_global["% Promedio"]],
+                x=mod_prom["% Promedio"], y=mod_prom["Modulo"], orientation="h",
+                marker_color=bar_colors(mod_prom["% Promedio"]),
+                text=[f"{p}%" for p in mod_prom["% Promedio"]],
                 textposition="outside",
-                textfont=dict(family="Nunito Sans", color="#3d3a35", size=12),
-                customdata=mod_global[["Pendientes"]],
-                hovertemplate="<b>%{y}</b><br>Promedio: %{x}%<br>Pendientes: %{customdata[0]}<extra></extra>"
+                textfont=dict(family="Nunito Sans", color="#3d3a35", size=12)
             ))
             fig_mod.update_layout(make_layout(
-                xaxis=dict(range=[0,115], ticksuffix="%", showgrid=True,
-                           gridcolor="#f0ede8", zeroline=False,
-                           tickfont=dict(family="Nunito Sans", color="#3d3a35")),
+                xaxis=dict(range=[0,115], ticksuffix="%", showgrid=True, gridcolor="#f0ede8",
+                           zeroline=False, tickfont=dict(family="Nunito Sans", color="#3d3a35")),
                 yaxis=dict(autorange="reversed", showgrid=False,
                            tickfont=dict(family="Nunito Sans", color="#3d3a35")),
                 margin=dict(t=10,b=10,l=10,r=60),
-                height=max(280, len(mod_global) * 46)
+                height=max(280, len(mod_prom) * 46)
             ))
             st.plotly_chart(fig_mod, use_container_width=True)
 
@@ -760,11 +756,9 @@ elif st.session_state["page"] == "dashboard":
                 textfont=dict(family="Nunito Sans", color="#3d3a35", size=12)
             ))
             fig_m2.update_layout(make_layout(
-                xaxis=dict(range=[0,125], ticksuffix="%", showgrid=True,
-                           gridcolor="#f0ede8", zeroline=False,
-                           tickfont=dict(family="Nunito Sans", color="#3d3a35")),
-                yaxis=dict(showgrid=False,
-                           tickfont=dict(family="Nunito Sans", color="#3d3a35")),
+                xaxis=dict(range=[0,125], ticksuffix="%", showgrid=True, gridcolor="#f0ede8",
+                           zeroline=False, tickfont=dict(family="Nunito Sans", color="#3d3a35")),
+                yaxis=dict(showgrid=False, tickfont=dict(family="Nunito Sans", color="#3d3a35")),
                 margin=dict(t=10,b=10,l=10,r=110),
                 height=max(300, len(df_mf) * 36)
             ))
@@ -774,8 +768,7 @@ elif st.session_state["page"] == "dashboard":
             st.markdown("**Detalle de lecciones por módulo y alumno**")
             col_f1, col_f2 = st.columns(2)
             with col_f1:
-                mods_disponibles = sorted(df_detalle["Modulo"].unique())
-                filtro_mod2 = st.selectbox("Módulo", mods_disponibles, key="mod2")
+                filtro_mod2 = st.selectbox("Módulo", sorted(df_detalle["Modulo"].unique()), key="mod2")
             with col_f2:
                 alumnos_mod = sorted(df_detalle[df_detalle["Modulo"]==filtro_mod2]["Nombre"].unique().tolist())
                 filtro_al   = st.selectbox("Alumno", ["Todos"] + alumnos_mod, key="al2")
@@ -787,7 +780,6 @@ elif st.session_state["page"] == "dashboard":
         else:
             st.warning("No hay datos de módulos disponibles.")
 
-    # TAB 4
     with tab4:
         caption("Lista exacta de cada <strong>lección que cada alumno NO ha completado</strong>. Filtra por alumno para seguimiento personalizado.")
         if not pendientes_detalle.empty:
@@ -799,9 +791,8 @@ elif st.session_state["page"] == "dashboard":
         else:
             st.success("¡Todos los alumnos completaron todas las lecciones!")
 
-    # TAB 5
     with tab5:
-        caption("Tabla cruzada alumno × módulo. Cada celda muestra el <strong>% de avance en ese módulo específico</strong>.")
+        caption("Tabla cruzada alumno × módulo. Cada celda = <strong>% de avance en ese módulo específico</strong>.")
         if not tabla_cruzada.empty:
             st.dataframe(tabla_cruzada.set_index("Nombre"), use_container_width=True)
             st.caption("Valores en % completado por módulo.")
@@ -810,25 +801,25 @@ elif st.session_state["page"] == "dashboard":
 
     # EXPORTAR
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-    st.markdown("<div style='height:2px; background:linear-gradient(90deg,#E8420A,#ff9a7a,transparent); border-radius:2px; margin-bottom:20px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:2px;background:linear-gradient(90deg,#E8420A,#ff9a7a,transparent);border-radius:2px;margin-bottom:20px;'></div>", unsafe_allow_html=True)
 
     col_txt, col_btn = st.columns([3, 1])
     with col_txt:
         st.markdown("""
-        <p style="font-weight:800; font-size:15px; color:#1a1815; margin-bottom:4px;">Exportar informe completo</p>
-        <p style="color:#8c8880; font-size:13px; margin:0;">Excel con 5 pestañas: resumen, por módulo, tabla cruzada, pendientes y detalle completo.</p>
+        <p style="font-weight:800;font-size:15px;color:#1a1815;margin-bottom:4px;">Exportar informe completo</p>
+        <p style="color:#8c8880;font-size:13px;margin:0;">Excel con 5 pestañas: resumen, por módulo, tabla cruzada, pendientes y detalle completo.</p>
         """, unsafe_allow_html=True)
     with col_btn:
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            resumen.to_excel(writer,               sheet_name="Resumen",          index=False)
+            resumen.to_excel(writer,                sheet_name="Resumen",          index=False)
             if not df_pivot.empty:
-                df_pivot.to_excel(writer,          sheet_name="Por modulo",       index=False)
+                df_pivot.to_excel(writer,           sheet_name="Por modulo",       index=False)
             if not tabla_cruzada.empty:
-                tabla_cruzada.to_excel(writer,     sheet_name="Tabla cruzada",    index=False)
+                tabla_cruzada.to_excel(writer,      sheet_name="Tabla cruzada",    index=False)
             if not pendientes_detalle.empty:
-                pendientes_detalle.to_excel(writer, sheet_name="Pendientes",      index=False)
-            df_detalle.to_excel(writer,            sheet_name="Detalle completo", index=False)
+                pendientes_detalle.to_excel(writer, sheet_name="Pendientes",       index=False)
+            df_detalle.to_excel(writer,             sheet_name="Detalle completo", index=False)
         buffer.seek(0)
         st.download_button(
             label="📥 Descargar Excel",
