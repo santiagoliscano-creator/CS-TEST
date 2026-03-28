@@ -1,6 +1,6 @@
 """
-Hotmart Club · Club Analytics v5.5
-Fix: full pagination in get_students
+Hotmart Club · Club Analytics v6.0
+Fix: robust pagination + response parsing + validation order
 """
 
 import streamlit as st
@@ -118,44 +118,80 @@ def get_pages_for_module(access_token, subdomain, module_id):
         return [], str(e)
 
 
+def _extract_items_from_response(data):
+    """Extrae la lista de items de cualquier formato de respuesta de la API."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        # Buscar en claves conocidas (orden de prioridad)
+        for key in ("items", "users", "content", "students", "data", "results", "records"):
+            val = data.get(key)
+            if isinstance(val, list) and val:
+                return val
+        # Si ninguna clave conocida tiene lista, buscar la primera lista no vacía
+        for key, val in data.items():
+            if isinstance(val, list) and val and key not in ("errors", "warnings"):
+                return val
+    return []
+
+
+def _extract_page_token(data):
+    """Busca el token de paginación en cualquier ubicación del response."""
+    if not isinstance(data, dict):
+        return None
+    # Nivel raíz — claves comunes
+    for key in ("next_page_token", "nextPageToken", "page_token", "cursor", "nextCursor"):
+        token = data.get(key)
+        if token:
+            return token
+    # Dentro de objetos anidados de paginación
+    for wrapper_key in ("pagination", "paging", "page_info", "meta"):
+        wrapper = data.get(wrapper_key)
+        if isinstance(wrapper, dict):
+            for key in ("next_page_token", "nextPageToken", "page_token", "cursor", "next"):
+                token = wrapper.get(key)
+                if token:
+                    return token
+    return None
+
+
 def get_students(access_token, subdomain):
     """Obtiene TODOS los alumnos con paginación automática."""
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"}
     todos = []
     page_token = None
-    max_pages = 50  # seguro para evitar loops infinitos
+    max_pages = 100  # suficiente para ~5000 alumnos
 
-    for _ in range(max_pages):
+    for page_num in range(max_pages):
         url = f"https://developers.hotmart.com/club/api/v1/users?subdomain={subdomain}&max_results=50"
         if page_token:
             url += f"&page_token={page_token}"
         try:
             resp = requests.get(url, headers=headers, timeout=20)
             if resp.status_code != 200:
-                return todos if todos else [], f"HTTP {resp.status_code}: {resp.text[:200]}"
+                err_msg = f"HTTP {resp.status_code}: {resp.text[:300]}"
+                return todos if todos else [], err_msg
             if not resp.text or not resp.text.strip():
                 break
             data = resp.json()
-            if isinstance(data, list):
-                todos.extend(data)
-                break  # lista plana = sin paginación
-            elif isinstance(data, dict):
-                items = data.get("items", data.get("users", data.get("content", [])))
-                if not items:
-                    break
-                todos.extend(items)
-                # Buscar token de siguiente página en varios formatos posibles
-                page_token = (
-                    data.get("next_page_token") or
-                    data.get("nextPageToken") or
-                    data.get("page_token") or
-                    data.get("cursor") or
-                    None
-                )
+
+            items = _extract_items_from_response(data)
+            if not items:
+                # Si es la primera página y no hay items, devolver vacío
+                if page_num == 0:
+                    return [], f"Respuesta vacía de la API. Cuerpo: {resp.text[:300]}"
+                break
+
+            todos.extend(items)
+
+            # Buscar token de siguiente página
+            if isinstance(data, dict):
+                page_token = _extract_page_token(data)
                 if not page_token:
                     break
             else:
-                break
+                break  # lista plana = sin paginación
+
         except Exception as e:
             return todos if todos else [], str(e)
 
@@ -170,8 +206,17 @@ def get_student_progress(access_token, subdomain, user_id):
         if resp.status_code == 200:
             if not resp.text or not resp.text.strip(): return [], None
             data = resp.json()
-            if isinstance(data, dict): return data.get("lessons", data.get("items", [])), None
-            elif isinstance(data, list): return data, None
+            if isinstance(data, list): return data, None
+            if isinstance(data, dict):
+                # Buscar en claves conocidas
+                for key in ("lessons", "items", "content", "data", "results"):
+                    val = data.get(key)
+                    if isinstance(val, list):
+                        return val, None
+                # Fallback: primera lista encontrada
+                for key, val in data.items():
+                    if isinstance(val, list) and key not in ("errors", "warnings"):
+                        return val, None
             return [], None
         elif resp.status_code == 204: return [], None
         return [], f"HTTP {resp.status_code}"
@@ -298,26 +343,37 @@ if st.session_state["page"] == "login":
                     if err:
                         st.error(f"Credenciales incorrectas: {err}")
                     else:
+                        # PASO 1: Validar que el Club tenga alumnos PRIMERO
+                        students_check, err_st = get_students(token, subdomain_in)
+                        if not students_check:
+                            detail = f" Detalle: {err_st}" if err_st else ""
+                            st.error(
+                                f"No se encontraron alumnos en el subdominio '{subdomain_in}'.{detail}\n\n"
+                                f"Verifica que:\n"
+                                f"- El subdominio sea exacto (sin espacios, en minúsculas)\n"
+                                f"- Tu cuenta tenga acceso a este Club\n"
+                                f"- El Club tenga al menos un alumno matriculado"
+                            )
+                            st.stop()
+
+                        # PASO 2: Intentar obtener módulos vía endpoint directo
                         mods_main, _  = get_modules(token, subdomain_in, is_extra=False)
                         mods_extra, _ = get_modules(token, subdomain_in, is_extra=True)
-                        todos = mods_main + mods_extra
+                        todos_mods = mods_main + mods_extra
                         modulo_info = {}
 
-                        if todos:
-                            for m in todos:
+                        if todos_mods:
+                            for m in todos_mods:
                                 mid  = m.get("module_id", m.get("id", ""))
                                 name = m.get("name", f"Modulo {mid}")
                                 pages, _ = get_pages_for_module(token, subdomain_in, mid)
                                 total_pages = len([p for p in pages if p.get("type","CONTENT") != "ADVERTISEMENT"]) if pages else 0
                                 modulo_info[name] = {"module_id": mid, "total_pages": total_pages, "is_extra": m.get("is_extra", False)}
                         else:
-                            students_tmp, err_st = get_students(token, subdomain_in)
-                            if not students_tmp:
-                                st.error(f"No se encontraron alumnos en '{subdomain_in}'. Verifica que el subdominio sea correcto y que esta cuenta tenga acceso a ese Club.")
-                                st.stop()
-                            nombres_tmp = extraer_modulos_desde_alumnos(token, subdomain_in, students_tmp, max_alumnos=30)
+                            # PASO 3: Fallback — extraer módulos desde las lecciones de alumnos
+                            nombres_tmp = extraer_modulos_desde_alumnos(token, subdomain_in, students_check, max_alumnos=30)
                             if not nombres_tmp:
-                                st.warning(f"No se detectaron módulos. Se cargará el Club completo.")
+                                st.warning("No se detectaron módulos. Se cargará el Club completo.")
                                 modulo_info["Contenido del Club"] = {"module_id": "", "total_pages": 0, "is_extra": False}
                             else:
                                 for nombre in nombres_tmp:
