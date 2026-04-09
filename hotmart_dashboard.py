@@ -1,6 +1,6 @@
 """
-Hotmart Club · Club Analytics v7.0
-Fix: New Club detection, v1+v2 API fallback, pagination, clear diagnostics
+Hotmart Club · Club Analytics v7.2
+Fix: paginated charts + tables (20 per page), CloudFront detection, robust pagination
 """
 
 import streamlit as st
@@ -172,7 +172,22 @@ def _try_get_students_endpoint(access_token, subdomain, base_url, max_pages=100)
             resp = requests.get(url, headers=headers, timeout=20)
             diag["status_code"] = resp.status_code
             diag["body_length"] = len(resp.text) if resp.text else 0
-            diag["body_preview"] = (resp.text or "")[:500]
+
+            # Detectar si CloudFront interceptó la petición (no llegó al API backend)
+            resp_headers = resp.headers
+            location_header = resp_headers.get("Location", "")
+            x_cache = resp_headers.get("X-Cache", "")
+            has_ratelimit = "RateLimit-Limit" in resp_headers
+            diag["location_header"] = location_header
+            diag["x_cache"] = x_cache
+            diag["reached_api_backend"] = has_ratelimit
+
+            if location_header == "/docs/" or "Error from cloudfront" in x_cache:
+                diag["result"] = "CloudFront redirect — no llega al API backend"
+                diagnostics.append(diag)
+                if page_num == 0:
+                    return [], "cloudfront_redirect", diagnostics
+                break
 
             if resp.status_code not in (200, 204):
                 diag["result"] = f"HTTP {resp.status_code}"
@@ -180,7 +195,7 @@ def _try_get_students_endpoint(access_token, subdomain, base_url, max_pages=100)
                 return todos, f"HTTP {resp.status_code}", diagnostics
 
             if not resp.text or not resp.text.strip():
-                diag["result"] = "Empty body (200 OK sin datos)"
+                diag["result"] = "Empty body"
                 diagnostics.append(diag)
                 if page_num == 0:
                     return [], "empty_body", diagnostics
@@ -227,17 +242,15 @@ def get_students(access_token, subdomain):
     """Obtiene TODOS los alumnos probando múltiples versiones de la API.
     Retorna (students_list, error_string, diagnostics_list).
     """
-    # Lista de endpoints a intentar en orden de prioridad
     endpoints = [
         ("v1", "https://developers.hotmart.com/club/api/v1/users"),
-        ("v2", "https://developers.hotmart.com/club/api/v2/users"),
     ]
 
     all_diagnostics = []
+    got_cloudfront_redirect = False
 
     for version_label, base_url in endpoints:
         students, err, diag = _try_get_students_endpoint(access_token, subdomain, base_url)
-        # Etiquetar diagnósticos con la versión
         for d in diag:
             d["api_version"] = version_label
         all_diagnostics.extend(diag)
@@ -245,12 +258,18 @@ def get_students(access_token, subdomain):
         if students:
             return students, None, all_diagnostics
 
-        # Si el error no es body vacío ni no_items, es un error real (auth, network)
-        if err and err not in ("empty_body", "no_items"):
+        if err == "cloudfront_redirect":
+            got_cloudfront_redirect = True
+
+        # Si el error no es body vacío, redirect ni no_items, es un error real
+        if err and err not in ("empty_body", "no_items", "cloudfront_redirect"):
             return [], err, all_diagnostics
 
     # Ningún endpoint devolvió alumnos
-    return [], "new_club_empty", all_diagnostics
+    if got_cloudfront_redirect:
+        return [], "cloudfront_redirect", all_diagnostics
+
+    return [], "no_data", all_diagnostics
 
 
 def get_student_progress(access_token, subdomain, user_id):
@@ -324,6 +343,51 @@ def bar_colors(values):
 
 def caption(text):
     st.markdown(f'<div class="caption-box">{text}</div>', unsafe_allow_html=True)
+
+PAGE_SIZE = 20
+
+def paginated_bar_chart(df, x_col, y_col, color_values, text_list, key_prefix,
+                        layout_kwargs=None, textfont=None, customdata=None,
+                        hovertemplate=None, orientation="h"):
+    """Muestra un gráfico de barras paginado con navegación."""
+    total = len(df)
+    if total <= PAGE_SIZE:
+        # Pocos datos, mostrar todo sin paginación
+        return df, total
+
+    total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+    page = st.selectbox(
+        f"Página (de {total_pages})",
+        range(1, total_pages + 1),
+        format_func=lambda p: f"{p} de {total_pages} · alumnos {(p-1)*PAGE_SIZE+1}–{min(p*PAGE_SIZE, total)}",
+        key=f"page_{key_prefix}"
+    )
+    start = (page - 1) * PAGE_SIZE
+    end = min(start + PAGE_SIZE, total)
+    return df.iloc[start:end], total
+
+def paginated_dataframe(df, key_prefix, page_size=PAGE_SIZE):
+    """Muestra un dataframe paginado con navegación."""
+    total = len(df)
+    if total <= page_size:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        return
+
+    total_pages = (total + page_size - 1) // page_size
+    col_info, col_nav = st.columns([2, 1])
+    with col_info:
+        st.markdown(f"<p style='color:#8c8880;font-size:12px;margin:0;'>{total} registros en total</p>", unsafe_allow_html=True)
+    with col_nav:
+        page = st.selectbox(
+            "Página",
+            range(1, total_pages + 1),
+            format_func=lambda p: f"{p} de {total_pages}",
+            key=f"tbl_{key_prefix}",
+            label_visibility="collapsed"
+        )
+    start = (page - 1) * page_size
+    end = min(start + page_size, total)
+    st.dataframe(df.iloc[start:end], use_container_width=True, hide_index=True)
 
 def calcular_abandono(df_alumno):
     completadas = df_alumno[df_alumno["Completada"] == "Si"].sort_values("Fecha Completado", ascending=False)
@@ -401,30 +465,28 @@ if st.session_state["page"] == "login":
                         # PASO 1: Validar que el Club tenga alumnos PRIMERO
                         students_check, err_st, diag_st = get_students(token, subdomain_in)
                         if not students_check:
-                            # Detectar si es un Club migrado al Nuevo Hotmart Club
-                            is_new_club = (err_st == "new_club_empty")
+                            is_cloudfront = (err_st == "cloudfront_redirect")
 
-                            if is_new_club:
-                                st.warning("⚠️ **Club en la nueva versión de Hotmart Club detectado**")
+                            if is_cloudfront:
                                 st.markdown(f"""
                                 <div style="background:#fff5f2;border:1.5px solid #ffd4c4;border-radius:12px;padding:18px 20px;margin:12px 0;">
                                     <p style="font-weight:700;color:#c93608;font-size:15px;margin-bottom:8px;">
-                                        El subdominio '{subdomain_in}' pertenece al Nuevo Hotmart Club
+                                        El subdominio '{subdomain_in}' no está registrado en la API de Hotmart Developers
                                     </p>
                                     <p style="color:#5c5a56;font-size:13px;line-height:1.7;margin-bottom:12px;">
-                                        La API actual de Hotmart Developers (<code>/club/api/v1</code>) no devuelve datos de alumnos para
-                                        productos migrados al Nuevo Hotmart Club. La autenticación es correcta, pero el endpoint
-                                        responde vacío (HTTP 200, 0 bytes).
+                                        La petición fue interceptada por CloudFront (CDN) y redirigida a <code>/docs/</code>
+                                        sin llegar al backend de la API. Los headers muestran <code>X-Cache: Error from cloudfront</code>
+                                        y no hay RateLimit headers — esto confirma que la API no reconoce este subdominio.
                                     </p>
                                     <p style="color:#5c5a56;font-size:13px;line-height:1.7;margin-bottom:12px;">
-                                        <strong>Esto NO es un error de credenciales ni del subdominio</strong> — es una limitación
-                                        conocida de la API para Clubs migrados a la nueva plataforma.
+                                        Tus credenciales son correctas (la autenticación fue exitosa), pero este Club específico no está
+                                        habilitado para la API de Hotmart Developers.
                                     </p>
-                                    <p style="font-weight:700;color:#1a1815;font-size:13px;margin-bottom:6px;">Alternativas:</p>
+                                    <p style="font-weight:700;color:#1a1815;font-size:13px;margin-bottom:6px;">Posibles causas:</p>
                                     <p style="color:#5c5a56;font-size:13px;line-height:1.7;margin:0;">
-                                        1. Usa <strong>Hotmart Club Analytics</strong> (integrado en la plataforma) para este producto<br>
-                                        2. Si el producto tiene una versión en el Club clásico, usa ese subdominio<br>
-                                        3. Consulta con el equipo de Hotmart Developers si hay un endpoint actualizado para el nuevo Club
+                                        • El Club está en una versión de la plataforma no soportada por la API actual<br>
+                                        • El subdominio no está correctamente registrado en el gateway de la API<br>
+                                        • <strong>Recomendación:</strong> Escalar con el equipo de Hotmart Developers para que habiliten este subdominio
                                     </p>
                                 </div>
                                 """, unsafe_allow_html=True)
@@ -438,19 +500,17 @@ if st.session_state["page"] == "login":
                                     f"- El Club tenga al menos un alumno matriculado"
                                 )
 
-                            # Diagnóstico técnico siempre disponible
                             if diag_st:
-                                with st.expander("🔍 Diagnóstico técnico", expanded=not is_new_club):
+                                with st.expander("🔍 Diagnóstico técnico", expanded=False):
                                     for d in diag_st:
                                         label = d.get('api_version', '?')
-                                        st.markdown(f"**API {label} — Página {d.get('page', '?')}:**")
                                         st.code(
-                                            f"URL: {d.get('url', '?')}\n"
+                                            f"API {label} — Página {d.get('page', '?')}\n"
                                             f"Status: {d.get('status_code', '?')}\n"
-                                            f"Body length: {d.get('body_length', '?')} chars\n"
-                                            f"JSON type: {d.get('json_type', 'N/A')}\n"
-                                            f"JSON keys: {d.get('json_keys', 'N/A')}\n"
-                                            f"Items found: {d.get('items_found', 'N/A')}\n"
+                                            f"Body: {d.get('body_length', '?')} chars\n"
+                                            f"Location header: {d.get('location_header', 'N/A')}\n"
+                                            f"X-Cache: {d.get('x_cache', 'N/A')}\n"
+                                            f"Reached API backend: {d.get('reached_api_backend', 'N/A')}\n"
                                             f"Result: {d.get('result', '?')}",
                                             language="text"
                                         )
@@ -466,8 +526,11 @@ if st.session_state["page"] == "login":
                             for m in todos_mods:
                                 mid  = m.get("module_id", m.get("id", ""))
                                 name = m.get("name", f"Modulo {mid}")
-                                pages, _ = get_pages_for_module(token, subdomain_in, mid)
-                                total_pages = len([p for p in pages if p.get("type","CONTENT") != "ADVERTISEMENT"]) if pages else 0
+                                # Usar total_pages del módulo si viene directo (evita llamadas extra)
+                                total_pages = m.get("total_pages", 0)
+                                if not total_pages and mid:
+                                    pages, _ = get_pages_for_module(token, subdomain_in, mid)
+                                    total_pages = len([p for p in pages if p.get("type","CONTENT") != "ADVERTISEMENT"]) if pages else 0
                                 modulo_info[name] = {"module_id": mid, "total_pages": total_pages, "is_extra": m.get("is_extra", False)}
                         else:
                             # PASO 3: Fallback — extraer módulos desde las lecciones de alumnos
@@ -801,13 +864,14 @@ elif st.session_state["page"] == "dashboard":
         with col_r:
             st.markdown("**Progreso por alumno**")
             sorted_r = resumen.sort_values("% Avance", ascending=True)
+            page_df, page_total = paginated_bar_chart(sorted_r, "% Avance", "Nombre", None, None, "tab1_bar")
             fig_a = go.Figure(go.Bar(
-                x=sorted_r["% Avance"], y=sorted_r["Nombre"], orientation="h",
-                marker_color=[COLOR_MAP[e] for e in sorted_r["Estado"]],
-                text=[f"{p}%" for p in sorted_r["% Avance"]],
+                x=page_df["% Avance"], y=page_df["Nombre"], orientation="h",
+                marker_color=[COLOR_MAP[e] for e in page_df["Estado"]],
+                text=[f"{p}%" for p in page_df["% Avance"]],
                 textposition="outside",
                 textfont=dict(family="Nunito Sans", color="#3d3a35", size=11),
-                customdata=sorted_r[["Completadas","Total lecciones"]],
+                customdata=page_df[["Completadas","Total lecciones"]],
                 hovertemplate="<b>%{y}</b><br>%{x}% · %{customdata[0]}/%{customdata[1]} lecciones<extra></extra>"
             ))
             fig_a.update_layout(make_layout(
@@ -815,14 +879,14 @@ elif st.session_state["page"] == "dashboard":
                            zeroline=False, tickfont=dict(family="Nunito Sans", color="#3d3a35")),
                 yaxis=dict(showgrid=False, tickfont=dict(family="Nunito Sans", color="#3d3a35")),
                 margin=dict(t=10,b=10,l=10,r=60),
-                height=max(300, total_alumnos * 28)
+                height=max(300, len(page_df) * 28)
             ))
             st.plotly_chart(fig_a, use_container_width=True)
 
         st.markdown("**Tabla detallada**")
-        st.dataframe(
+        paginated_dataframe(
             resumen[["Nombre","Email","Completadas","Total lecciones","% Avance","Estado"]].sort_values("% Avance"),
-            use_container_width=True, hide_index=True
+            "tab1_tabla"
         )
 
     with tab2:
@@ -836,7 +900,7 @@ elif st.session_state["page"] == "dashboard":
                 st.success("¡Todos los alumnos tienen avance registrado!")
             else:
                 st.error(f"{len(sin_act)} alumnos con 0% — contactar de inmediato:")
-                st.dataframe(sin_act, use_container_width=True, hide_index=True)
+                paginated_dataframe(sin_act, "tab2_sinact")
 
         with col_b:
             st.markdown("**Módulos con más lecciones pendientes**")
@@ -871,7 +935,7 @@ elif st.session_state["page"] == "dashboard":
             "Modulo abandono","Leccion abandono"
         ]].sort_values("% Avance")
         if not df_ab.empty:
-            st.dataframe(df_ab, use_container_width=True, hide_index=True)
+            paginated_dataframe(df_ab, "tab2_abandono")
         else:
             st.info("No hay datos de detalle disponibles.")
 
@@ -904,10 +968,11 @@ elif st.session_state["page"] == "dashboard":
             st.markdown("**Zoom: alumno por alumno dentro de un módulo**")
             filtro_mod = st.selectbox("Módulo", sorted(df_pivot["Modulo"].unique()), key="mod1")
             df_mf = df_pivot[df_pivot["Modulo"] == filtro_mod].sort_values("% Avance")
+            page_mf, _ = paginated_bar_chart(df_mf, "% Avance", "Nombre", None, None, "tab3_zoom")
             fig_m2 = go.Figure(go.Bar(
-                x=df_mf["% Avance"], y=df_mf["Nombre"], orientation="h",
-                marker_color=bar_colors(df_mf["% Avance"]),
-                text=[f"{p}% ({int(c)}/{int(t)})" for p,c,t in zip(df_mf["% Avance"], df_mf["Completadas"], df_mf["Total modulo"])],
+                x=page_mf["% Avance"], y=page_mf["Nombre"], orientation="h",
+                marker_color=bar_colors(page_mf["% Avance"]),
+                text=[f"{p}% ({int(c)}/{int(t)})" for p,c,t in zip(page_mf["% Avance"], page_mf["Completadas"], page_mf["Total modulo"])],
                 textposition="outside",
                 textfont=dict(family="Nunito Sans", color="#3d3a35", size=12)
             ))
@@ -916,7 +981,7 @@ elif st.session_state["page"] == "dashboard":
                            zeroline=False, tickfont=dict(family="Nunito Sans", color="#3d3a35")),
                 yaxis=dict(showgrid=False, tickfont=dict(family="Nunito Sans", color="#3d3a35")),
                 margin=dict(t=10,b=10,l=10,r=110),
-                height=max(300, len(df_mf) * 36)
+                height=max(300, len(page_mf) * 36)
             ))
             st.plotly_chart(fig_m2, use_container_width=True)
 
@@ -931,8 +996,7 @@ elif st.session_state["page"] == "dashboard":
             df_det_fil = df_detalle[df_detalle["Modulo"]==filtro_mod2]
             if filtro_al != "Todos":
                 df_det_fil = df_det_fil[df_det_fil["Nombre"]==filtro_al]
-            st.dataframe(df_det_fil[["Nombre","Leccion","Completada","Fecha Completado"]],
-                         use_container_width=True, hide_index=True)
+            paginated_dataframe(df_det_fil[["Nombre","Leccion","Completada","Fecha Completado"]], "tab3_detalle")
         else:
             st.warning("No hay datos de módulos disponibles.")
 
@@ -943,7 +1007,7 @@ elif st.session_state["page"] == "dashboard":
                 ["Todos"] + sorted(pendientes_detalle["Nombre"].unique().tolist()), key="pend_al")
             df_pf = pendientes_detalle if filtro_alumno == "Todos" else pendientes_detalle[pendientes_detalle["Nombre"]==filtro_alumno]
             st.markdown(f"**{len(df_pf)} lecciones pendientes**")
-            st.dataframe(df_pf, use_container_width=True, hide_index=True)
+            paginated_dataframe(df_pf, "tab4_pend")
         else:
             st.success("¡Todos los alumnos completaron todas las lecciones!")
 
