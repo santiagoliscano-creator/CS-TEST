@@ -29,6 +29,26 @@ footer { display:none !important; }
 #MainMenu { display:none !important; }
 .stDeployButton { display:none !important; }
 .stApp { background:#faf9f7 !important; }
+/* ── Forzar fondo claro y contraste en todos los contenedores ── */
+[data-testid="stMarkdown"],
+[data-testid="stMarkdown"] div,
+[data-testid="stMarkdown"] span { background-color: transparent !important; }
+[data-testid="stMainBlockContainer"],
+[data-testid="stVerticalBlock"],
+[data-testid="stHorizontalBlock"],
+[data-testid="stColumn"],
+section[data-testid="stSidebar"],
+.stTabs [data-baseweb="tab-panel"] { background-color: transparent !important; }
+header[data-testid="stHeader"] { background:#faf9f7 !important; }
+/* Forzar color base de texto para evitar herencia de dark mode */
+.stApp, .stApp div, .stApp span, .stApp p, .stApp h1, .stApp h2, .stApp h3 { color: #3d3a35; }
+[data-testid="stSelectbox"] label { color:#3d3a35 !important; font-weight:700 !important; font-size:13px !important; }
+[data-testid="stMultiSelect"] label { color:#3d3a35 !important; font-weight:700 !important; font-size:13px !important; }
+.stSelectbox > div > div { background:white !important; color:#1a1815 !important; }
+.stMultiSelect > div > div { background:white !important; color:#1a1815 !important; }
+/* Expanders */
+[data-testid="stExpander"] { background:white !important; border-radius:12px !important; }
+[data-testid="stExpander"] summary span { color:#3d3a35 !important; }
 .stTextInput > div > div > input {
     border-radius:10px !important; border:1.5px solid #e0ddd8 !important;
     font-size:14px !important; padding:10px 14px !important;
@@ -444,7 +464,7 @@ if st.session_state["page"] == "login":
 
         st.markdown("""
         <div style="text-align:center; margin-top:16px;">
-            <p style="color:#b8b4ae; font-size:12px; line-height:1.7;">
+            <p style="color:#8c8880; font-size:12px; line-height:1.7;">
                 ¿Cómo obtener mis credenciales?<br>
                 Entra a <strong style="color:#E8420A;">developers.hotmart.com</strong>
                 → crea una aplicación → copia tus credenciales.<br>
@@ -639,7 +659,7 @@ elif st.session_state["page"] == "selector":
                 <div style="width:8px;height:8px;border-radius:50%;background:{dot};flex-shrink:0;"></div>
                 <div>
                     <div style="font-weight:700;font-size:13px;color:#1a1815;">{nombre}</div>
-                    <div style="font-size:11px;color:#b8b4ae;">{'Extra' if info['is_extra'] else 'Principal'}{' · ' + str(pages) + ' clases' if pages > 0 else ''}</div>
+                    <div style="font-size:11px;color:#8c8880;">{'Extra' if info['is_extra'] else 'Principal'}{' · ' + str(pages) + ' clases' if pages > 0 else ''}</div>
                 </div>
             </div>""", unsafe_allow_html=True)
 
