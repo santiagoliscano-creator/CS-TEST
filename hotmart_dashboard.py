@@ -863,7 +863,7 @@ elif st.session_state["page"] == "dashboard":
 
         with col_r:
             st.markdown("**Progreso por alumno**")
-            sorted_r = resumen.sort_values("% Avance", ascending=True)
+            sorted_r = resumen.sort_values("% Avance", ascending=False)
             page_df, page_total = paginated_bar_chart(sorted_r, "% Avance", "Nombre", None, None, "tab1_bar")
             fig_a = go.Figure(go.Bar(
                 x=page_df["% Avance"], y=page_df["Nombre"], orientation="h",
@@ -885,7 +885,7 @@ elif st.session_state["page"] == "dashboard":
 
         st.markdown("**Tabla detallada**")
         paginated_dataframe(
-            resumen[["Nombre","Email","Completadas","Total lecciones","% Avance","Estado"]].sort_values("% Avance"),
+            resumen[["Nombre","Email","Completadas","Total lecciones","% Avance","Estado"]].sort_values("% Avance", ascending=False),
             "tab1_tabla"
         )
 
@@ -967,7 +967,7 @@ elif st.session_state["page"] == "dashboard":
             st.markdown("---")
             st.markdown("**Zoom: alumno por alumno dentro de un módulo**")
             filtro_mod = st.selectbox("Módulo", sorted(df_pivot["Modulo"].unique()), key="mod1")
-            df_mf = df_pivot[df_pivot["Modulo"] == filtro_mod].sort_values("% Avance")
+            df_mf = df_pivot[df_pivot["Modulo"] == filtro_mod].sort_values("% Avance", ascending=False)
             page_mf, _ = paginated_bar_chart(df_mf, "% Avance", "Nombre", None, None, "tab3_zoom")
             fig_m2 = go.Figure(go.Bar(
                 x=page_mf["% Avance"], y=page_mf["Nombre"], orientation="h",
