@@ -39,7 +39,7 @@ footer { display:none !important; }
 [data-testid="stColumn"],
 section[data-testid="stSidebar"],
 .stTabs [data-baseweb="tab-panel"] { background-color: transparent !important; }
-header[data-testid="stHeader"] { background:#faf9f7 !important; }
+header[data-testid="stHeader"] { display:none !important; }
 /* Forzar color base de texto para evitar herencia de dark mode */
 .stApp, .stApp div, .stApp span, .stApp p, .stApp h1, .stApp h2, .stApp h3 { color: #3d3a35; }
 [data-testid="stSelectbox"] label { color:#3d3a35 !important; font-weight:700 !important; font-size:13px !important; }
