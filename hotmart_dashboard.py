@@ -1,6 +1,6 @@
 """
-Hotmart Club · Club Analytics v7.2
-Fix: paginated charts + tables (20 per page), CloudFront detection, robust pagination
+Hotmart Club · Club Analytics v8.0
+Feature: product filter (class_id), paginated UI, CloudFront detection
 """
 
 import streamlit as st
@@ -402,8 +402,8 @@ def calcular_abandono(df_alumno):
 
 # ─── SESSION STATE ────────────────────────────────────────────────────────────
 
-for k, v in {"page":"login","token":None,"modulo_info":{},
-             "subdomain":"","club_name":"","modulos_seleccionados":[],"dashboard_data":None}.items():
+for k, v in {"page":"login","token":None,"modulo_info":{}, "product_map":{},
+             "subdomain":"","club_name":"","modulos_seleccionados":[],"selected_class_ids":None,"dashboard_data":None}.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -526,12 +526,27 @@ if st.session_state["page"] == "login":
                             for m in todos_mods:
                                 mid  = m.get("module_id", m.get("id", ""))
                                 name = m.get("name", f"Modulo {mid}")
-                                # Usar total_pages del módulo si viene directo (evita llamadas extra)
                                 total_pages = m.get("total_pages", 0)
                                 if not total_pages and mid:
                                     pages, _ = get_pages_for_module(token, subdomain_in, mid)
                                     total_pages = len([p for p in pages if p.get("type","CONTENT") != "ADVERTISEMENT"]) if pages else 0
-                                modulo_info[name] = {"module_id": mid, "total_pages": total_pages, "is_extra": m.get("is_extra", False)}
+                                classes = m.get("classes", [])
+                                modulo_info[name] = {
+                                    "module_id": mid, "total_pages": total_pages,
+                                    "is_extra": m.get("is_extra", False), "classes": classes
+                                }
+
+                            # Construir mapa de productos (class_id → módulos)
+                            product_map = {}
+                            for mod_name, info in modulo_info.items():
+                                for cid in info.get("classes", []):
+                                    if cid not in product_map:
+                                        product_map[cid] = {"modules": [], "total_pages": 0}
+                                    product_map[cid]["modules"].append(mod_name)
+                                    product_map[cid]["total_pages"] += info["total_pages"]
+                            # Etiquetar cada producto con el primer módulo (por secuencia)
+                            for cid, pinfo in product_map.items():
+                                pinfo["label"] = pinfo["modules"][0] if pinfo["modules"] else cid
                         else:
                             # PASO 3: Fallback — extraer módulos desde las lecciones de alumnos
                             nombres_tmp = extraer_modulos_desde_alumnos(token, subdomain_in, students_check, max_alumnos=30)
@@ -544,6 +559,7 @@ if st.session_state["page"] == "login":
 
                         st.session_state.update({
                             "token": token, "modulo_info": modulo_info,
+                            "product_map": product_map if todos_mods else {},
                             "subdomain": subdomain_in,
                             "club_name": subdomain_in.replace("-"," ").title(),
                             "page": "selector"
@@ -559,6 +575,7 @@ elif st.session_state["page"] == "selector":
 
     token       = st.session_state["token"]
     modulo_info = st.session_state["modulo_info"]
+    product_map = st.session_state.get("product_map", {})
     subdomain   = st.session_state["subdomain"]
     club_name   = st.session_state["club_name"]
 
@@ -567,18 +584,40 @@ elif st.session_state["page"] == "selector":
         <div style="width:42px;height:42px;background:#E8420A;border-radius:12px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(232,66,10,0.3);font-size:20px;">🔥</div>
         <div>
             <div style="font-weight:800;font-size:20px;color:#1a1815;">Club Analytics</div>
-            <div style="font-size:13px;color:#8c8880;">{club_name} · {len(modulo_info)} módulos encontrados</div>
+            <div style="font-size:13px;color:#8c8880;">{club_name} · {len(modulo_info)} módulos · {len(product_map)} producto{'s' if len(product_map) != 1 else ''}</div>
         </div>
     </div>
     <h2 style="font-weight:800;font-size:22px;color:#1a1815;margin-bottom:8px;">¿Qué producto quieres analizar?</h2>
-    <p style="color:#8c8880;font-size:14px;margin-bottom:28px;">Selecciona los módulos del producto que quieres revisar. Si hay un solo producto, selecciónalos todos.</p>
+    <p style="color:#8c8880;font-size:14px;margin-bottom:28px;">Filtra por producto para reducir el tiempo de carga. Luego selecciona los módulos a incluir.</p>
     """, unsafe_allow_html=True)
+
+    # ─── FILTRO POR PRODUCTO ────────────────────────────────────────────
+    selected_class_ids = None
+    if len(product_map) > 1:
+        product_options = {"Todos los productos": None}
+        for cid, pinfo in product_map.items():
+            label = f"{pinfo['label']} ({len(pinfo['modules'])} módulos · {pinfo['total_pages']} lecciones)"
+            product_options[label] = cid
+
+        selected_product_label = st.selectbox("🏷️ Producto", list(product_options.keys()), key="product_filter")
+        selected_class_ids = product_options[selected_product_label]
+
+        if selected_class_ids:
+            # Filtrar módulos que pertenecen a este producto
+            product_modules = product_map[selected_class_ids]["modules"]
+            filtered_modulo_info = {k: v for k, v in modulo_info.items() if k in product_modules}
+        else:
+            filtered_modulo_info = modulo_info
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    else:
+        filtered_modulo_info = modulo_info
 
     col_sel, col_prev = st.columns([1.3, 1])
     with col_sel:
-        nombres = list(modulo_info.keys())
+        nombres = list(filtered_modulo_info.keys())
         seleccionados = st.multiselect("Módulos a incluir", options=nombres, default=nombres)
-        total_lec = sum(modulo_info[m]["total_pages"] for m in seleccionados)
+        total_lec = sum(filtered_modulo_info.get(m, {}).get("total_pages", 0) for m in seleccionados)
         if seleccionados:
             st.markdown(f"""
             <div style="background:linear-gradient(135deg,#fff5f2,#fff);border:1.5px solid #ffd4c4;border-radius:14px;padding:18px 20px;margin-top:16px;">
@@ -589,7 +628,7 @@ elif st.session_state["page"] == "selector":
 
     with col_prev:
         st.markdown("<div style='font-weight:800;font-size:11px;color:#8c8880;letter-spacing:0.08em;margin-bottom:12px;'>MÓDULOS DISPONIBLES</div>", unsafe_allow_html=True)
-        for nombre, info in modulo_info.items():
+        for nombre, info in filtered_modulo_info.items():
             activo = nombre in seleccionados
             pages  = info["total_pages"]
             bg     = "#fff5f2" if activo else "#faf9f7"
@@ -612,6 +651,7 @@ elif st.session_state["page"] == "selector":
     with col_g:
         if st.button("Generar Dashboard →", type="primary", use_container_width=True, disabled=not seleccionados):
             st.session_state["modulos_seleccionados"] = seleccionados
+            st.session_state["selected_class_ids"] = [selected_class_ids] if selected_class_ids else None
             st.session_state["page"] = "loading"; st.rerun()
 
 
@@ -625,6 +665,7 @@ elif st.session_state["page"] == "loading":
     modulo_info = st.session_state["modulo_info"]
     subdomain   = st.session_state["subdomain"]
     modulos_sel = st.session_state["modulos_seleccionados"]
+    selected_class_ids = st.session_state.get("selected_class_ids")
     usar_filtro = modulos_sel != ["Contenido del Club"]
 
     _, col_c, _ = st.columns([1, 1.5, 1])
@@ -645,6 +686,18 @@ elif st.session_state["page"] == "loading":
             st.error(f"No se pudo obtener la lista de alumnos: {err2}")
             if st.button("← Volver"): st.session_state["page"] = "selector"; st.rerun()
         st.stop()
+
+    # Filtrar alumnos por producto (class_id) ANTES de llamar lecciones
+    total_before_filter = len(students)
+    if selected_class_ids:
+        students = [s for s in students if s.get("class_id") in selected_class_ids]
+        with col_c:
+            status_txt.markdown(
+                f"<p style='text-align:center;color:#8c8880;font-size:13px;'>"
+                f"Filtrado: {len(students)} de {total_before_filter} alumnos por producto</p>",
+                unsafe_allow_html=True
+            )
+            time.sleep(0.5)
 
     all_data, errores = [], []
 
