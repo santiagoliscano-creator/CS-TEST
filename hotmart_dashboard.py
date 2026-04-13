@@ -1,6 +1,6 @@
 """
-Hotmart Club · Club Analytics v8.0
-Feature: product filter (class_id), paginated UI, CloudFront detection
+Hotmart Club · Club Analytics v8.1
+Feature: state criteria legend for AMs, product filter, paginated UI
 """
 
 import streamlit as st
@@ -143,12 +143,10 @@ def _extract_items_from_response(data):
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
-        # Buscar en claves conocidas (orden de prioridad)
         for key in ("items", "users", "content", "students", "data", "results", "records"):
             val = data.get(key)
             if isinstance(val, list) and val:
                 return val
-        # Si ninguna clave conocida tiene lista, buscar la primera lista no vacía
         for key, val in data.items():
             if isinstance(val, list) and val and key not in ("errors", "warnings"):
                 return val
@@ -159,12 +157,10 @@ def _extract_page_token(data):
     """Busca el token de paginación en cualquier ubicación del response."""
     if not isinstance(data, dict):
         return None
-    # Nivel raíz — claves comunes
     for key in ("next_page_token", "nextPageToken", "page_token", "cursor", "nextCursor"):
         token = data.get(key)
         if token:
             return token
-    # Dentro de objetos anidados de paginación
     for wrapper_key in ("pagination", "paging", "page_info", "meta"):
         wrapper = data.get(wrapper_key)
         if isinstance(wrapper, dict):
@@ -193,7 +189,6 @@ def _try_get_students_endpoint(access_token, subdomain, base_url, max_pages=100)
             diag["status_code"] = resp.status_code
             diag["body_length"] = len(resp.text) if resp.text else 0
 
-            # Detectar si CloudFront interceptó la petición (no llegó al API backend)
             resp_headers = resp.headers
             location_header = resp_headers.get("Location", "")
             x_cache = resp_headers.get("X-Cache", "")
@@ -259,9 +254,7 @@ def _try_get_students_endpoint(access_token, subdomain, base_url, max_pages=100)
 
 
 def get_students(access_token, subdomain):
-    """Obtiene TODOS los alumnos probando múltiples versiones de la API.
-    Retorna (students_list, error_string, diagnostics_list).
-    """
+    """Obtiene TODOS los alumnos probando múltiples versiones de la API."""
     endpoints = [
         ("v1", "https://developers.hotmart.com/club/api/v1/users"),
     ]
@@ -281,11 +274,9 @@ def get_students(access_token, subdomain):
         if err == "cloudfront_redirect":
             got_cloudfront_redirect = True
 
-        # Si el error no es body vacío, redirect ni no_items, es un error real
         if err and err not in ("empty_body", "no_items", "cloudfront_redirect"):
             return [], err, all_diagnostics
 
-    # Ningún endpoint devolvió alumnos
     if got_cloudfront_redirect:
         return [], "cloudfront_redirect", all_diagnostics
 
@@ -302,12 +293,10 @@ def get_student_progress(access_token, subdomain, user_id):
             data = resp.json()
             if isinstance(data, list): return data, None
             if isinstance(data, dict):
-                # Buscar en claves conocidas
                 for key in ("lessons", "items", "content", "data", "results"):
                     val = data.get(key)
                     if isinstance(val, list):
                         return val, None
-                # Fallback: primera lista encontrada
                 for key, val in data.items():
                     if isinstance(val, list) and key not in ("errors", "warnings"):
                         return val, None
@@ -372,7 +361,6 @@ def paginated_bar_chart(df, x_col, y_col, color_values, text_list, key_prefix,
     """Muestra un gráfico de barras paginado con navegación."""
     total = len(df)
     if total <= PAGE_SIZE:
-        # Pocos datos, mostrar todo sin paginación
         return df, total
 
     total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
@@ -408,6 +396,64 @@ def paginated_dataframe(df, key_prefix, page_size=PAGE_SIZE):
     start = (page - 1) * page_size
     end = min(start + page_size, total)
     st.dataframe(df.iloc[start:end], use_container_width=True, hide_index=True)
+
+
+def render_estados_legend():
+    """Renderiza la leyenda explicativa de los estados de alumno."""
+    st.markdown("""
+    <div style="background:white;border:1px solid #f0ede8;border-radius:12px;padding:18px 22px;margin-top:16px;box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+            <span style="font-size:14px;">ℹ️</span>
+            <span style="font-weight:800;font-size:13px;color:#1a1815;letter-spacing:0.02em;">¿CÓMO SE CLASIFICAN LOS ALUMNOS?</span>
+        </div>
+        <p style="color:#8c8880;font-size:12px;margin:0 0 14px 0;line-height:1.5;">
+            La clasificación se basa en el <strong style="color:#3d3a35;">% de avance oficial de Hotmart</strong> por alumno (completed_percentage de la API). Estos rangos ayudan a priorizar acciones de Customer Success.
+        </p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">
+            <div style="background:#fff5f2;border-left:4px solid #ffb3a0;border-radius:8px;padding:12px 14px;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                    <div style="width:10px;height:10px;border-radius:50%;background:#ffb3a0;"></div>
+                    <strong style="font-size:13px;color:#1a1815;">Sin actividad</strong>
+                    <span style="margin-left:auto;font-size:11px;color:#8c8880;font-weight:700;">0%</span>
+                </div>
+                <p style="font-size:11px;color:#5c5a56;margin:0;line-height:1.5;">
+                    Alumnos matriculados que nunca han ingresado al contenido. <strong>Riesgo de churn inmediato</strong> — acción recomendada: contactar hoy.
+                </p>
+            </div>
+            <div style="background:#fff5f2;border-left:4px solid #ff7c4d;border-radius:8px;padding:12px 14px;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                    <div style="width:10px;height:10px;border-radius:50%;background:#ff7c4d;"></div>
+                    <strong style="font-size:13px;color:#1a1815;">En riesgo</strong>
+                    <span style="margin-left:auto;font-size:11px;color:#8c8880;font-weight:700;">1% – 29%</span>
+                </div>
+                <p style="font-size:11px;color:#5c5a56;margin:0;line-height:1.5;">
+                    Iniciaron pero abandonaron temprano. <strong>Riesgo de churn moderado</strong> — acción: identificar fricciones y reactivar con contenido específico.
+                </p>
+            </div>
+            <div style="background:#fff5f2;border-left:4px solid #E8420A;border-radius:8px;padding:12px 14px;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                    <div style="width:10px;height:10px;border-radius:50%;background:#E8420A;"></div>
+                    <strong style="font-size:13px;color:#1a1815;">En progreso</strong>
+                    <span style="margin-left:auto;font-size:11px;color:#8c8880;font-weight:700;">30% – 79%</span>
+                </div>
+                <p style="font-size:11px;color:#5c5a56;margin:0;line-height:1.5;">
+                    Alumnos activos con avance consistente. <strong>Foco en retención</strong> — acción: mantener el engagement con recordatorios y celebrar hitos.
+                </p>
+            </div>
+            <div style="background:#fff5f2;border-left:4px solid #b83208;border-radius:8px;padding:12px 14px;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                    <div style="width:10px;height:10px;border-radius:50%;background:#b83208;"></div>
+                    <strong style="font-size:13px;color:#1a1815;">Avanzado</strong>
+                    <span style="margin-left:auto;font-size:11px;color:#8c8880;font-weight:700;">80% – 100%</span>
+                </div>
+                <p style="font-size:11px;color:#5c5a56;margin:0;line-height:1.5;">
+                    Alumnos de alto engagement, cerca de completar el curso. <strong>Oportunidad comercial</strong> — acción: upsell a otros productos, testimonios, referidos.
+                </p>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 
 def calcular_abandono(df_alumno):
     completadas = df_alumno[df_alumno["Completada"] == "Si"].sort_values("Fecha Completado", ascending=False)
@@ -482,7 +528,6 @@ if st.session_state["page"] == "login":
                     if err:
                         st.error(f"Credenciales incorrectas: {err}")
                     else:
-                        # PASO 1: Validar que el Club tenga alumnos PRIMERO
                         students_check, err_st, diag_st = get_students(token, subdomain_in)
                         if not students_check:
                             is_cloudfront = (err_st == "cloudfront_redirect")
@@ -536,7 +581,6 @@ if st.session_state["page"] == "login":
                                         )
                             st.stop()
 
-                        # PASO 2: Intentar obtener módulos vía endpoint directo
                         mods_main, _  = get_modules(token, subdomain_in, is_extra=False)
                         mods_extra, _ = get_modules(token, subdomain_in, is_extra=True)
                         todos_mods = mods_main + mods_extra
@@ -556,7 +600,6 @@ if st.session_state["page"] == "login":
                                     "is_extra": m.get("is_extra", False), "classes": classes
                                 }
 
-                            # Construir mapa de productos (class_id → módulos)
                             product_map = {}
                             for mod_name, info in modulo_info.items():
                                 for cid in info.get("classes", []):
@@ -564,11 +607,9 @@ if st.session_state["page"] == "login":
                                         product_map[cid] = {"modules": [], "total_pages": 0}
                                     product_map[cid]["modules"].append(mod_name)
                                     product_map[cid]["total_pages"] += info["total_pages"]
-                            # Etiquetar cada producto con el primer módulo (por secuencia)
                             for cid, pinfo in product_map.items():
                                 pinfo["label"] = pinfo["modules"][0] if pinfo["modules"] else cid
                         else:
-                            # PASO 3: Fallback — extraer módulos desde las lecciones de alumnos
                             nombres_tmp = extraer_modulos_desde_alumnos(token, subdomain_in, students_check, max_alumnos=30)
                             if not nombres_tmp:
                                 st.warning("No se detectaron módulos. Se cargará el Club completo.")
@@ -611,7 +652,6 @@ elif st.session_state["page"] == "selector":
     <p style="color:#8c8880;font-size:14px;margin-bottom:28px;">Filtra por producto para reducir el tiempo de carga. Luego selecciona los módulos a incluir.</p>
     """, unsafe_allow_html=True)
 
-    # ─── FILTRO POR PRODUCTO ────────────────────────────────────────────
     selected_class_ids = None
     if len(product_map) > 1:
         product_options = {"Todos los productos": None}
@@ -623,7 +663,6 @@ elif st.session_state["page"] == "selector":
         selected_class_ids = product_options[selected_product_label]
 
         if selected_class_ids:
-            # Filtrar módulos que pertenecen a este producto
             product_modules = product_map[selected_class_ids]["modules"]
             filtered_modulo_info = {k: v for k, v in modulo_info.items() if k in product_modules}
         else:
@@ -707,7 +746,6 @@ elif st.session_state["page"] == "loading":
             if st.button("← Volver"): st.session_state["page"] = "selector"; st.rerun()
         st.stop()
 
-    # Filtrar alumnos por producto (class_id) ANTES de llamar lecciones
     total_before_filter = len(students)
     if selected_class_ids:
         students = [s for s in students if s.get("class_id") in selected_class_ids]
@@ -901,6 +939,9 @@ elif st.session_state["page"] == "dashboard":
                 {sin_actividad} alumno{'s' if sin_actividad > 1 else ''} con 0% de avance — riesgo de churn
             </span>
         </div>""", unsafe_allow_html=True)
+
+    # LEYENDA DE ESTADOS
+    render_estados_legend()
 
     if errores:
         with st.expander(f"⚠️ {len(errores)} alumnos con error al extraer datos"):
