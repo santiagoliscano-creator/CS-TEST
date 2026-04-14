@@ -457,7 +457,7 @@ def render_estados_legend():
 
 def calcular_abandono(df_alumno):
     completadas = df_alumno[df_alumno["Completada"] == "Si"].sort_values("Fecha Completado", ascending=False)
-    pendientes  = df_alumno[df_alumno["Completada"] == "No"]
+    pendientes  = df_alumno[df_alumno["Completada"] != "Si"]
     ul = completadas.iloc[0]["Leccion"]          if not completadas.empty else "—"
     um = completadas.iloc[0]["Modulo"]           if not completadas.empty else "—"
     uf = completadas.iloc[0]["Fecha Completado"] if not completadas.empty else "—"
@@ -466,10 +466,28 @@ def calcular_abandono(df_alumno):
     return ul, um, uf, ma, la
 
 
+def detectar_tipo(page_type_raw, page_name):
+    """Detecta el tipo de contenido usando el campo type de la API de páginas
+    y como fallback usa el nombre de la página."""
+    if page_type_raw:
+        pt = str(page_type_raw).upper()
+        if any(k in pt for k in ["QUIZ", "SURVEY", "QUESTIONNAIRE"]): return "Cuestionario"
+        if any(k in pt for k in ["VIDEO", "MEDIA", "VIMEO", "YOUTUBE"]):  return "Video"
+        if any(k in pt for k in ["PDF", "DOCUMENT", "FILE"]):             return "Documento"
+        if any(k in pt for k in ["LINK", "URL", "EMBED", "EXTERNAL"]):    return "Link"
+        if any(k in pt for k in ["TEXT", "RICH_TEXT", "HTML"]):           return "Texto"
+    pn = (page_name or "").lower()
+    if any(k in pn for k in ["cuestionario", "quiz", "evaluac", "test", "examen"]): return "Cuestionario"
+    if any(k in pn for k in ["(grabación)", "grabacion", "(recording)", "video"]):  return "Video"
+    if any(k in pn for k in ["(link)", "invite", "(invite)", "enlace"]):            return "Link"
+    if any(k in pn for k in ["pdf", "documento", "material"]):                      return "Documento"
+    return "Clase"
+
+
 # ─── SESSION STATE ────────────────────────────────────────────────────────────
 
-for k, v in {"page":"login","token":None,"modulo_info":{}, "product_map":{},
-             "subdomain":"","club_name":"","modulos_seleccionados":[],"selected_class_ids":None,"dashboard_data":None}.items():
+for k, v in {"page":"login","token":None,"modulo_info":{},
+             "subdomain":"","club_name":"","modulos_seleccionados":[],"dashboard_data":None}.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -590,25 +608,18 @@ if st.session_state["page"] == "login":
                             for m in todos_mods:
                                 mid  = m.get("module_id", m.get("id", ""))
                                 name = m.get("name", f"Modulo {mid}")
-                                total_pages = m.get("total_pages", 0)
-                                if not total_pages and mid:
-                                    pages, _ = get_pages_for_module(token, subdomain_in, mid)
-                                    total_pages = len([p for p in pages if p.get("type","CONTENT") != "ADVERTISEMENT"]) if pages else 0
+                                # Siempre obtener las páginas completas para cross-referencing
+                                pages_raw = []
+                                if mid:
+                                    pages_raw, _ = get_pages_for_module(token, subdomain_in, mid)
+                                pages = [p for p in pages_raw if p.get("type", "CONTENT") != "ADVERTISEMENT"] if pages_raw else []
+                                total_pages = m.get("total_pages", 0) or len(pages)
                                 classes = m.get("classes", [])
                                 modulo_info[name] = {
                                     "module_id": mid, "total_pages": total_pages,
-                                    "is_extra": m.get("is_extra", False), "classes": classes
+                                    "is_extra": m.get("is_extra", False),
+                                    "classes": classes, "pages": pages
                                 }
-
-                            product_map = {}
-                            for mod_name, info in modulo_info.items():
-                                for cid in info.get("classes", []):
-                                    if cid not in product_map:
-                                        product_map[cid] = {"modules": [], "total_pages": 0}
-                                    product_map[cid]["modules"].append(mod_name)
-                                    product_map[cid]["total_pages"] += info["total_pages"]
-                            for cid, pinfo in product_map.items():
-                                pinfo["label"] = pinfo["modules"][0] if pinfo["modules"] else cid
                         else:
                             nombres_tmp = extraer_modulos_desde_alumnos(token, subdomain_in, students_check, max_alumnos=30)
                             if not nombres_tmp:
@@ -620,7 +631,6 @@ if st.session_state["page"] == "login":
 
                         st.session_state.update({
                             "token": token, "modulo_info": modulo_info,
-                            "product_map": product_map if todos_mods else {},
                             "subdomain": subdomain_in,
                             "club_name": subdomain_in.replace("-"," ").title(),
                             "page": "selector"
@@ -636,7 +646,6 @@ elif st.session_state["page"] == "selector":
 
     token       = st.session_state["token"]
     modulo_info = st.session_state["modulo_info"]
-    product_map = st.session_state.get("product_map", {})
     subdomain   = st.session_state["subdomain"]
     club_name   = st.session_state["club_name"]
 
@@ -645,38 +654,18 @@ elif st.session_state["page"] == "selector":
         <div style="width:42px;height:42px;background:#E8420A;border-radius:12px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(232,66,10,0.3);font-size:20px;">🔥</div>
         <div>
             <div style="font-weight:800;font-size:20px;color:#1a1815;">Club Analytics</div>
-            <div style="font-size:13px;color:#8c8880;">{club_name} · {len(modulo_info)} módulos · {len(product_map)} producto{'s' if len(product_map) != 1 else ''}</div>
+            <div style="font-size:13px;color:#8c8880;">{club_name} · {len(modulo_info)} módulos</div>
         </div>
     </div>
-    <h2 style="font-weight:800;font-size:22px;color:#1a1815;margin-bottom:8px;">¿Qué producto quieres analizar?</h2>
-    <p style="color:#8c8880;font-size:14px;margin-bottom:28px;">Filtra por producto para reducir el tiempo de carga. Luego selecciona los módulos a incluir.</p>
+    <h2 style="font-weight:800;font-size:22px;color:#1a1815;margin-bottom:8px;">¿Qué módulos quieres analizar?</h2>
+    <p style="color:#8c8880;font-size:14px;margin-bottom:28px;">Selecciona los módulos a incluir en el dashboard. Puedes analizar uno o todos.</p>
     """, unsafe_allow_html=True)
-
-    selected_class_ids = None
-    if len(product_map) > 1:
-        product_options = {"Todos los productos": None}
-        for cid, pinfo in product_map.items():
-            label = f"{pinfo['label']} ({len(pinfo['modules'])} módulos · {pinfo['total_pages']} lecciones)"
-            product_options[label] = cid
-
-        selected_product_label = st.selectbox("🏷️ Producto", list(product_options.keys()), key="product_filter")
-        selected_class_ids = product_options[selected_product_label]
-
-        if selected_class_ids:
-            product_modules = product_map[selected_class_ids]["modules"]
-            filtered_modulo_info = {k: v for k, v in modulo_info.items() if k in product_modules}
-        else:
-            filtered_modulo_info = modulo_info
-
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    else:
-        filtered_modulo_info = modulo_info
 
     col_sel, col_prev = st.columns([1.3, 1])
     with col_sel:
-        nombres = list(filtered_modulo_info.keys())
+        nombres = list(modulo_info.keys())
         seleccionados = st.multiselect("Módulos a incluir", options=nombres, default=nombres)
-        total_lec = sum(filtered_modulo_info.get(m, {}).get("total_pages", 0) for m in seleccionados)
+        total_lec = sum(modulo_info.get(m, {}).get("total_pages", 0) for m in seleccionados)
         if seleccionados:
             st.markdown(f"""
             <div style="background:linear-gradient(135deg,#fff5f2,#fff);border:1.5px solid #ffd4c4;border-radius:14px;padding:18px 20px;margin-top:16px;">
@@ -687,7 +676,7 @@ elif st.session_state["page"] == "selector":
 
     with col_prev:
         st.markdown("<div style='font-weight:800;font-size:11px;color:#8c8880;letter-spacing:0.08em;margin-bottom:12px;'>MÓDULOS DISPONIBLES</div>", unsafe_allow_html=True)
-        for nombre, info in filtered_modulo_info.items():
+        for nombre, info in modulo_info.items():
             activo = nombre in seleccionados
             pages  = info["total_pages"]
             bg     = "#fff5f2" if activo else "#faf9f7"
@@ -710,7 +699,6 @@ elif st.session_state["page"] == "selector":
     with col_g:
         if st.button("Generar Dashboard →", type="primary", use_container_width=True, disabled=not seleccionados):
             st.session_state["modulos_seleccionados"] = seleccionados
-            st.session_state["selected_class_ids"] = [selected_class_ids] if selected_class_ids else None
             st.session_state["page"] = "loading"; st.rerun()
 
 
@@ -724,8 +712,6 @@ elif st.session_state["page"] == "loading":
     modulo_info = st.session_state["modulo_info"]
     subdomain   = st.session_state["subdomain"]
     modulos_sel = st.session_state["modulos_seleccionados"]
-    selected_class_ids = st.session_state.get("selected_class_ids")
-    usar_filtro = modulos_sel != ["Contenido del Club"]
 
     _, col_c, _ = st.columns([1, 1.5, 1])
     with col_c:
@@ -746,22 +732,7 @@ elif st.session_state["page"] == "loading":
             if st.button("← Volver"): st.session_state["page"] = "selector"; st.rerun()
         st.stop()
 
-    total_before_filter = len(students)
-    if selected_class_ids:
-        students = [s for s in students if s.get("class_id") in selected_class_ids]
-        with col_c:
-            status_txt.markdown(
-                f"<p style='text-align:center;color:#8c8880;font-size:13px;'>"
-                f"Filtrado: {len(students)} de {total_before_filter} alumnos por producto</p>",
-                unsafe_allow_html=True
-            )
-            time.sleep(0.5)
-
     all_data, errores = [], []
-    # ── DEBUG TEMPORAL: captura raw de un alumno específico ──────────────────
-    DEBUG_TARGET_EMAIL = "Senbara.marketing@gmail.com"  # Busca por email exacto
-    debug_capture = None
-    # ─────────────────────────────────────────────────────────────────────────
 
     for i, student in enumerate(students):
         uid           = student.get("user_id", student.get("id", ""))
@@ -781,54 +752,71 @@ elif st.session_state["page"] == "loading":
         lecciones, err_l = get_student_progress(token, subdomain, uid)
         if err_l: errores.append({"Alumno": name, "Error": err_l})
 
-        # ── DEBUG: captura datos raw del alumno objetivo ─────────────────────
-        if DEBUG_TARGET_EMAIL.lower() == email.lower() and debug_capture is None:
-            import json
-            module_names_found = sorted(set(l.get("module_name", "⚠️ SIN module_name") for l in lecciones)) if lecciones else []
-            content_types_found = sorted(set(
-                l.get("content_type", l.get("type", l.get("page_type", "⚠️ SIN type")))
-                for l in lecciones
-            )) if lecciones else []
-            debug_capture = {
-                "alumno_name": name,
-                "alumno_uid": uid,
-                "student_object_completo": student,
-                "progress_object": prog_obj,
-                "pct_hotmart": pct_hotmart,
-                "comp_hotmart": comp_hotmart,
-                "total_hotmart": total_hotmart,
-                "total_lecciones_api": len(lecciones) if lecciones else 0,
-                "module_names_en_lecciones": module_names_found,
-                "content_types_en_lecciones": content_types_found,
-                "primeras_5_lecciones_raw": lecciones[:5] if lecciones else [],
-                "todas_lecciones_raw": lecciones or [],
-            }
-        # ─────────────────────────────────────────────────────────────────────
+        # Lookup rápido: page_id → datos de lección del alumno
+        lecciones_map = {}
+        if lecciones:
+            for l in lecciones:
+                pid = l.get("page_id")
+                if pid:
+                    lecciones_map[pid] = l
 
-        if not lecciones:
+        added_any_row = False
+        for mn in modulos_sel:
+            mod_pages = modulo_info.get(mn, {}).get("pages", [])
+
+            if mod_pages:
+                # ── MODO CATÁLOGO: iterar sobre TODAS las páginas del módulo ──
+                for page in mod_pages:
+                    page_id   = page.get("page_id", page.get("id", ""))
+                    page_name = page.get("page_name", page.get("name", "Sin nombre"))
+                    page_type_raw = page.get("content_type", page.get("type", page.get("page_type", "")))
+                    tipo = detectar_tipo(page_type_raw, page_name)
+
+                    lesson = lecciones_map.get(page_id) if page_id else None
+                    if lesson:
+                        is_completed = lesson.get("is_completed", False)
+                        fecha = ""
+                        if lesson.get("completed_date"):
+                            try: fecha = datetime.fromtimestamp(lesson["completed_date"] / 1000).strftime("%d/%m/%Y")
+                            except: fecha = ""
+                        estado_leccion = "Si" if is_completed else "No"
+                    else:
+                        estado_leccion = "No iniciada"
+                        fecha = ""
+
+                    all_data.append({
+                        "Nombre": name, "Email": email, "Modulo": mn,
+                        "Leccion": page_name, "Tipo": tipo,
+                        "Completada": estado_leccion, "Fecha Completado": fecha,
+                        "Pct Hotmart": pct_hotmart, "Completadas Hotmart": comp_hotmart,
+                        "Total Hotmart": total_hotmart
+                    })
+                    added_any_row = True
+            else:
+                # ── MODO FALLBACK: solo lecciones tocadas (sin catálogo) ──
+                for l in (lecciones or []):
+                    if l.get("module_name") != mn: continue
+                    page_name = l.get("page_name", "Sin nombre")
+                    fecha = ""
+                    if l.get("completed_date"):
+                        try: fecha = datetime.fromtimestamp(l["completed_date"] / 1000).strftime("%d/%m/%Y")
+                        except: fecha = ""
+                    all_data.append({
+                        "Nombre": name, "Email": email, "Modulo": mn,
+                        "Leccion": page_name, "Tipo": detectar_tipo("", page_name),
+                        "Completada": "Si" if l.get("is_completed") else "No",
+                        "Fecha Completado": fecha,
+                        "Pct Hotmart": pct_hotmart, "Completadas Hotmart": comp_hotmart,
+                        "Total Hotmart": total_hotmart
+                    })
+                    added_any_row = True
+
+        if not added_any_row:
             all_data.append({
                 "Nombre": name, "Email": email,
-                "Modulo": "Sin actividad", "Leccion": "Sin actividad",
+                "Modulo": "Sin actividad", "Leccion": "Sin actividad", "Tipo": "—",
                 "Completada": "No", "Fecha Completado": "",
                 "Pct Hotmart": pct_hotmart, "Completadas Hotmart": comp_hotmart,
-                "Total Hotmart": total_hotmart
-            })
-            time.sleep(0.1); continue
-
-        for l in lecciones:
-            mn = l.get("module_name", "Sin modulo")
-            if usar_filtro and mn not in modulos_sel: continue
-            fecha = ""
-            if l.get("completed_date"):
-                try: fecha = datetime.fromtimestamp(l["completed_date"] / 1000).strftime("%d/%m/%Y")
-                except: fecha = ""
-            all_data.append({
-                "Nombre": name, "Email": email, "Modulo": mn,
-                "Leccion": l.get("page_name", "Sin nombre"),
-                "Completada": "Si" if l.get("is_completed") else "No",
-                "Fecha Completado": fecha,
-                "Pct Hotmart": pct_hotmart,
-                "Completadas Hotmart": comp_hotmart,
                 "Total Hotmart": total_hotmart
             })
         time.sleep(0.1)
@@ -869,13 +857,12 @@ elif st.session_state["page"] == "loading":
     resumen = pd.DataFrame(resumen_rows)
 
     pivot_rows = []
-    modulos_para_pivot = df_activos["Modulo"].unique() if not usar_filtro else modulos_sel
-    for m in modulos_para_pivot:
-        total_m_real = modulo_info.get(m, {}).get("total_pages", 0)
+    for m in modulos_sel:
         df_m = df_activos[df_activos["Modulo"] == m]
         for nombre, g in df_m.groupby("Nombre"):
             comp_m  = int((g["Completada"] == "Si").sum())
-            total_m = total_m_real if total_m_real > 0 else len(g)
+            # total_m = len(g) porque all_data ya tiene TODAS las páginas del catálogo
+            total_m = len(g)
             pct_m   = min(round(comp_m / total_m * 100, 1) if total_m > 0 else 0.0, 100.0)
             pivot_rows.append({
                 "Nombre": nombre, "Modulo": m,
@@ -888,15 +875,14 @@ elif st.session_state["page"] == "loading":
         df_pivot.pivot_table(index="Nombre", columns="Modulo", values="% Avance", fill_value=0).reset_index()
         if not df_pivot.empty else pd.DataFrame()
     )
-    df_detalle         = df_activos[["Nombre","Email","Modulo","Leccion","Completada","Fecha Completado"]].copy()
-    pendientes_detalle = df_activos[df_activos["Completada"] == "No"][["Nombre","Email","Modulo","Leccion"]].copy()
+    df_detalle         = df_activos[["Nombre","Email","Modulo","Leccion","Tipo","Completada","Fecha Completado"]].copy()
+    pendientes_detalle = df_activos[df_activos["Completada"] != "Si"][["Nombre","Email","Modulo","Leccion","Tipo","Completada"]].copy()
 
     st.session_state["dashboard_data"] = {
         "df": df, "df_detalle": df_detalle, "resumen": resumen,
         "df_pivot": df_pivot, "tabla_cruzada": tabla_cruzada,
         "pendientes_detalle": pendientes_detalle, "errores": errores,
-        "modulos_sel": modulos_sel, "total_alumnos_raw": len(students),
-        "debug_capture": debug_capture
+        "modulos_sel": modulos_sel, "total_alumnos_raw": len(students)
     }
     time.sleep(0.4)
     st.session_state["page"] = "dashboard"
@@ -975,42 +961,6 @@ elif st.session_state["page"] == "dashboard":
     if errores:
         with st.expander(f"⚠️ {len(errores)} alumnos con error al extraer datos"):
             st.dataframe(pd.DataFrame(errores), use_container_width=True, hide_index=True)
-
-    # ── DEBUG TEMPORAL: mostrar datos raw del alumno objetivo ────────────────
-    debug_capture = data.get("debug_capture")
-    if debug_capture:
-        import json
-        with st.expander(f"🔬 DEBUG — {debug_capture['alumno_name']} (eliminar después)", expanded=True):
-            st.markdown(f"""
-            **Alumno:** `{debug_capture['alumno_name']}` · **UID:** `{debug_capture['alumno_uid']}`
-            
-            **Hotmart API progress object:**
-            - `completed_percentage`: **{debug_capture['pct_hotmart']}%**
-            - `completed`: **{debug_capture['comp_hotmart']}**
-            - `total`: **{debug_capture['total_hotmart']}**
-            
-            **Lecciones devueltas por `/users/{{id}}/lessons`:** **{debug_capture['total_lecciones_api']}** lecciones
-            
-            **module_name únicos encontrados en lecciones:**
-            """)
-            for mn in debug_capture['module_names_en_lecciones']:
-                st.code(mn)
-            
-            st.markdown("**Tipos de contenido (content_type / type / page_type):**")
-            for ct in debug_capture['content_types_en_lecciones']:
-                st.code(ct)
-
-            st.markdown("**Student object completo (de `/users`):**")
-            st.json(debug_capture['student_object_completo'])
-
-            st.markdown("**Primeras 5 lecciones raw (de `/users/{id}/lessons`):**")
-            st.json(debug_capture['primeras_5_lecciones_raw'])
-
-            st.markdown("**Todas las lecciones raw:**")
-            st.json(debug_capture['todas_lecciones_raw'])
-    elif data.get("debug_capture") is None:
-        st.info("🔬 DEBUG: No se encontró el alumno con email 'Senbara.marketing@gmail.com' en este análisis.")
-    # ─────────────────────────────────────────────────────────────────────────
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -1172,19 +1122,36 @@ elif st.session_state["page"] == "dashboard":
             with col_f2:
                 alumnos_mod = sorted(df_detalle[df_detalle["Modulo"]==filtro_mod2]["Nombre"].unique().tolist())
                 filtro_al   = st.selectbox("Alumno", ["Todos"] + alumnos_mod, key="al2")
+
+            tipos_disponibles = sorted(df_detalle[df_detalle["Modulo"]==filtro_mod2]["Tipo"].unique().tolist())
+            filtro_tipo = st.multiselect("Tipo de contenido", options=tipos_disponibles,
+                                         default=tipos_disponibles, key="tipo_det")
+
             df_det_fil = df_detalle[df_detalle["Modulo"]==filtro_mod2]
             if filtro_al != "Todos":
                 df_det_fil = df_det_fil[df_det_fil["Nombre"]==filtro_al]
-            paginated_dataframe(df_det_fil[["Nombre","Leccion","Completada","Fecha Completado"]], "tab3_detalle")
+            if filtro_tipo:
+                df_det_fil = df_det_fil[df_det_fil["Tipo"].isin(filtro_tipo)]
+
+            st.caption("✅ Si = completada · ⏳ No = abierta pero pendiente · 🔒 No iniciada = nunca abierta")
+            paginated_dataframe(df_det_fil[["Nombre","Tipo","Leccion","Completada","Fecha Completado"]], "tab3_detalle")
         else:
             st.warning("No hay datos de módulos disponibles.")
 
     with tab4:
-        caption("Lista exacta de cada <strong>lección que cada alumno NO ha completado</strong>. Filtra por alumno para seguimiento personalizado.")
+        caption("Lecciones que cada alumno <strong>no ha completado</strong>. Distingue entre lecciones abiertas pero no terminadas (No) y nunca abiertas (No iniciada).")
         if not pendientes_detalle.empty:
-            filtro_alumno = st.selectbox("Filtrar por alumno",
-                ["Todos"] + sorted(pendientes_detalle["Nombre"].unique().tolist()), key="pend_al")
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                filtro_alumno = st.selectbox("Filtrar por alumno",
+                    ["Todos"] + sorted(pendientes_detalle["Nombre"].unique().tolist()), key="pend_al")
+            with col_p2:
+                estados_pend = sorted(pendientes_detalle["Completada"].unique().tolist())
+                filtro_estado_pend = st.multiselect("Estado", options=estados_pend,
+                                                    default=estados_pend, key="pend_estado")
             df_pf = pendientes_detalle if filtro_alumno == "Todos" else pendientes_detalle[pendientes_detalle["Nombre"]==filtro_alumno]
+            if filtro_estado_pend:
+                df_pf = df_pf[df_pf["Completada"].isin(filtro_estado_pend)]
             st.markdown(f"**{len(df_pf)} lecciones pendientes**")
             paginated_dataframe(df_pf, "tab4_pend")
         else:
