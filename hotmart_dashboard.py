@@ -758,6 +758,10 @@ elif st.session_state["page"] == "loading":
             time.sleep(0.5)
 
     all_data, errores = [], []
+    # ── DEBUG TEMPORAL: captura raw de un alumno específico ──────────────────
+    DEBUG_TARGET = "Senbara SAS"  # Cambia este nombre si necesitas otro alumno
+    debug_capture = None
+    # ─────────────────────────────────────────────────────────────────────────
 
     for i, student in enumerate(students):
         uid           = student.get("user_id", student.get("id", ""))
@@ -776,6 +780,30 @@ elif st.session_state["page"] == "loading":
 
         lecciones, err_l = get_student_progress(token, subdomain, uid)
         if err_l: errores.append({"Alumno": name, "Error": err_l})
+
+        # ── DEBUG: captura datos raw del alumno objetivo ─────────────────────
+        if DEBUG_TARGET.lower() in name.lower() and debug_capture is None:
+            import json
+            module_names_found = sorted(set(l.get("module_name", "⚠️ SIN module_name") for l in lecciones)) if lecciones else []
+            content_types_found = sorted(set(
+                l.get("content_type", l.get("type", l.get("page_type", "⚠️ SIN type")))
+                for l in lecciones
+            )) if lecciones else []
+            debug_capture = {
+                "alumno_name": name,
+                "alumno_uid": uid,
+                "student_object_completo": student,
+                "progress_object": prog_obj,
+                "pct_hotmart": pct_hotmart,
+                "comp_hotmart": comp_hotmart,
+                "total_hotmart": total_hotmart,
+                "total_lecciones_api": len(lecciones) if lecciones else 0,
+                "module_names_en_lecciones": module_names_found,
+                "content_types_en_lecciones": content_types_found,
+                "primeras_5_lecciones_raw": lecciones[:5] if lecciones else [],
+                "todas_lecciones_raw": lecciones or [],
+            }
+        # ─────────────────────────────────────────────────────────────────────
 
         if not lecciones:
             all_data.append({
@@ -867,7 +895,8 @@ elif st.session_state["page"] == "loading":
         "df": df, "df_detalle": df_detalle, "resumen": resumen,
         "df_pivot": df_pivot, "tabla_cruzada": tabla_cruzada,
         "pendientes_detalle": pendientes_detalle, "errores": errores,
-        "modulos_sel": modulos_sel, "total_alumnos_raw": len(students)
+        "modulos_sel": modulos_sel, "total_alumnos_raw": len(students),
+        "debug_capture": debug_capture
     }
     time.sleep(0.4)
     st.session_state["page"] = "dashboard"
@@ -946,6 +975,42 @@ elif st.session_state["page"] == "dashboard":
     if errores:
         with st.expander(f"⚠️ {len(errores)} alumnos con error al extraer datos"):
             st.dataframe(pd.DataFrame(errores), use_container_width=True, hide_index=True)
+
+    # ── DEBUG TEMPORAL: mostrar datos raw del alumno objetivo ────────────────
+    debug_capture = data.get("debug_capture")
+    if debug_capture:
+        import json
+        with st.expander(f"🔬 DEBUG — {debug_capture['alumno_name']} (eliminar después)", expanded=True):
+            st.markdown(f"""
+            **Alumno:** `{debug_capture['alumno_name']}` · **UID:** `{debug_capture['alumno_uid']}`
+            
+            **Hotmart API progress object:**
+            - `completed_percentage`: **{debug_capture['pct_hotmart']}%**
+            - `completed`: **{debug_capture['comp_hotmart']}**
+            - `total`: **{debug_capture['total_hotmart']}**
+            
+            **Lecciones devueltas por `/users/{{id}}/lessons`:** **{debug_capture['total_lecciones_api']}** lecciones
+            
+            **module_name únicos encontrados en lecciones:**
+            """)
+            for mn in debug_capture['module_names_en_lecciones']:
+                st.code(mn)
+            
+            st.markdown("**Tipos de contenido (content_type / type / page_type):**")
+            for ct in debug_capture['content_types_en_lecciones']:
+                st.code(ct)
+
+            st.markdown("**Student object completo (de `/users`):**")
+            st.json(debug_capture['student_object_completo'])
+
+            st.markdown("**Primeras 5 lecciones raw (de `/users/{id}/lessons`):**")
+            st.json(debug_capture['primeras_5_lecciones_raw'])
+
+            st.markdown("**Todas las lecciones raw:**")
+            st.json(debug_capture['todas_lecciones_raw'])
+    elif data.get("debug_capture") is None:
+        st.info("🔬 DEBUG: No se encontró el alumno 'Senbara SAS' en este análisis.")
+    # ─────────────────────────────────────────────────────────────────────────
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
