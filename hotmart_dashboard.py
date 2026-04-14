@@ -759,7 +759,7 @@ elif st.session_state["page"] == "loading":
 
     all_data, errores = [], []
     # ── DEBUG TEMPORAL: captura raw de un alumno específico ──────────────────
-    DEBUG_TARGET = "Senbara SAS"  # Cambia este nombre si necesitas otro alumno
+    DEBUG_TARGET_EMAIL = "Senbara.marketing@gmail.com"  # Busca por email exacto
     debug_capture = None
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -782,7 +782,7 @@ elif st.session_state["page"] == "loading":
         if err_l: errores.append({"Alumno": name, "Error": err_l})
 
         # ── DEBUG: captura datos raw del alumno objetivo ─────────────────────
-        if DEBUG_TARGET.lower() in name.lower() and debug_capture is None:
+        if DEBUG_TARGET_EMAIL.lower() == email.lower() and debug_capture is None:
             import json
             module_names_found = sorted(set(l.get("module_name", "⚠️ SIN module_name") for l in lecciones)) if lecciones else []
             content_types_found = sorted(set(
@@ -1009,7 +1009,7 @@ elif st.session_state["page"] == "dashboard":
             st.markdown("**Todas las lecciones raw:**")
             st.json(debug_capture['todas_lecciones_raw'])
     elif data.get("debug_capture") is None:
-        st.info("🔬 DEBUG: No se encontró el alumno 'Senbara SAS' en este análisis.")
+        st.info("🔬 DEBUG: No se encontró el alumno con email 'Senbara.marketing@gmail.com' en este análisis.")
     # ─────────────────────────────────────────────────────────────────────────
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
