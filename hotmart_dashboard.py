@@ -732,7 +732,10 @@ elif st.session_state["page"] == "loading":
             if st.button("← Volver"): st.session_state["page"] = "selector"; st.rerun()
         st.stop()
 
-    all_data, errores = [], []
+    errores       = []
+    resumen_rows  = []   # 1 fila por alumno  → pequeño
+    pivot_rows    = []   # 1 fila por alumno×módulo → mediano
+    student_index = []   # uid+name+email para drill-down posterior
 
     for i, student in enumerate(students):
         uid           = student.get("user_id", student.get("id", ""))
@@ -742,147 +745,125 @@ elif st.session_state["page"] == "loading":
         pct_hotmart   = float(prog_obj.get("completed_percentage", 0) or 0)
         comp_hotmart  = int(prog_obj.get("completed", 0) or 0)
         total_hotmart = int(prog_obj.get("total", 0) or 0)
+        estado        = estado_riesgo(pct_hotmart)
 
         prog_bar.progress((i + 1) / len(students))
-        status_txt.markdown(f"<p style='text-align:center;color:#8c8880;font-size:13px;'>Analizando {i+1} de {len(students)} alumnos...</p>", unsafe_allow_html=True)
+        status_txt.markdown(
+            f"<p style='text-align:center;color:#8c8880;font-size:13px;'>"
+            f"Analizando {i+1} de {len(students)}: <strong>{name}</strong></p>",
+            unsafe_allow_html=True
+        )
 
         if not uid:
             errores.append({"Alumno": name, "Error": "user_id vacio"}); continue
 
+        student_index.append({"uid": uid, "Nombre": name, "Email": email,
+                               "Pct Hotmart": pct_hotmart, "Estado": estado})
+
         lecciones, err_l = get_student_progress(token, subdomain, uid)
-        if err_l: errores.append({"Alumno": name, "Error": err_l})
+        if err_l:
+            errores.append({"Alumno": name, "Error": err_l})
 
-        # Lookup rápido: page_id → datos de lección del alumno
+        # Lookup page_id → lesson
         lecciones_map = {}
-        if lecciones:
-            for l in lecciones:
-                pid = l.get("page_id")
-                if pid:
-                    lecciones_map[pid] = l
+        for l in (lecciones or []):
+            pid = l.get("page_id")
+            if pid:
+                lecciones_map[pid] = l
 
-        added_any_row = False
+        # ── Calcular abandono y pivot POR MÓDULO en este mismo loop ──
+        ul_global, um_global, uf_global, ma_global, la_global = "—", "—", "—", "—", "—"
+        tiene_actividad = False
+
         for mn in modulos_sel:
             mod_pages = modulo_info.get(mn, {}).get("pages", [])
 
             if mod_pages:
-                # ── MODO CATÁLOGO: iterar sobre TODAS las páginas del módulo ──
+                comp_m, total_m = 0, len(mod_pages)
+                ul, um, uf, ma, la = "—", "—", "—", "—", "—"
+                primera_pendiente_encontrada = False
+
                 for page in mod_pages:
                     page_id   = page.get("page_id", page.get("id", ""))
                     page_name = page.get("page_name", page.get("name", "Sin nombre"))
-                    page_type_raw = page.get("content_type", page.get("type", page.get("page_type", "")))
-                    tipo = detectar_tipo(page_type_raw, page_name)
+                    lesson    = lecciones_map.get(page_id) if page_id else None
 
-                    lesson = lecciones_map.get(page_id) if page_id else None
                     if lesson:
-                        is_completed = lesson.get("is_completed", False)
-                        fecha = ""
-                        if lesson.get("completed_date"):
-                            try: fecha = datetime.fromtimestamp(lesson["completed_date"] / 1000).strftime("%d/%m/%Y")
-                            except: fecha = ""
-                        estado_leccion = "Si" if is_completed else "No"
+                        tiene_actividad = True
+                        if lesson.get("is_completed"):
+                            comp_m += 1
+                            fecha_raw = lesson.get("completed_date")
+                            if fecha_raw:
+                                try:
+                                    f = datetime.fromtimestamp(fecha_raw / 1000).strftime("%d/%m/%Y")
+                                    # Última completada = la más reciente
+                                    if uf == "—" or fecha_raw > (uf_ts if 'uf_ts' in dir() else 0):
+                                        ul, um, uf = page_name, mn, f
+                                        uf_ts = fecha_raw
+                                except: pass
+                        else:
+                            if not primera_pendiente_encontrada:
+                                ma, la = mn, page_name
+                                primera_pendiente_encontrada = True
                     else:
-                        estado_leccion = "No iniciada"
-                        fecha = ""
+                        # No iniciada — primer pendiente si no hay otro
+                        if not primera_pendiente_encontrada:
+                            ma, la = mn, page_name
+                            primera_pendiente_encontrada = True
 
-                    all_data.append({
-                        "Nombre": name, "Email": email, "Modulo": mn,
-                        "Leccion": page_name, "Tipo": tipo,
-                        "Completada": estado_leccion, "Fecha Completado": fecha,
-                        "Pct Hotmart": pct_hotmart, "Completadas Hotmart": comp_hotmart,
-                        "Total Hotmart": total_hotmart
-                    })
-                    added_any_row = True
+                pct_m = min(round(comp_m / total_m * 100, 1) if total_m > 0 else 0.0, 100.0)
+                pivot_rows.append({
+                    "Nombre": name, "Modulo": mn,
+                    "Completadas": comp_m, "Total modulo": total_m,
+                    "Pendientes": max(0, total_m - comp_m), "% Avance": pct_m
+                })
+
+                if um_global == "—" and ul != "—":
+                    ul_global, um_global, uf_global = ul, um, uf
+                if ma_global == "—" and ma != "—":
+                    ma_global, la_global = ma, la
+
             else:
-                # ── MODO FALLBACK: solo lecciones tocadas (sin catálogo) ──
-                for l in (lecciones or []):
-                    if l.get("module_name") != mn: continue
-                    page_name = l.get("page_name", "Sin nombre")
-                    fecha = ""
-                    if l.get("completed_date"):
-                        try: fecha = datetime.fromtimestamp(l["completed_date"] / 1000).strftime("%d/%m/%Y")
-                        except: fecha = ""
-                    all_data.append({
-                        "Nombre": name, "Email": email, "Modulo": mn,
-                        "Leccion": page_name, "Tipo": detectar_tipo("", page_name),
-                        "Completada": "Si" if l.get("is_completed") else "No",
-                        "Fecha Completado": fecha,
-                        "Pct Hotmart": pct_hotmart, "Completadas Hotmart": comp_hotmart,
-                        "Total Hotmart": total_hotmart
+                # Fallback sin catálogo
+                lecs_mod = [l for l in (lecciones or []) if l.get("module_name") == mn]
+                if lecs_mod:
+                    tiene_actividad = True
+                    comp_m  = sum(1 for l in lecs_mod if l.get("is_completed"))
+                    total_m = len(lecs_mod)
+                    pct_m   = min(round(comp_m / total_m * 100, 1) if total_m > 0 else 0.0, 100.0)
+                    pivot_rows.append({
+                        "Nombre": name, "Modulo": mn,
+                        "Completadas": comp_m, "Total modulo": total_m,
+                        "Pendientes": max(0, total_m - comp_m), "% Avance": pct_m
                     })
-                    added_any_row = True
 
-        if not added_any_row:
-            all_data.append({
-                "Nombre": name, "Email": email,
-                "Modulo": "Sin actividad", "Leccion": "Sin actividad", "Tipo": "—",
-                "Completada": "No", "Fecha Completado": "",
-                "Pct Hotmart": pct_hotmart, "Completadas Hotmart": comp_hotmart,
-                "Total Hotmart": total_hotmart
-            })
+        resumen_rows.append({
+            "Nombre": name, "Email": email,
+            "Completadas": comp_hotmart, "Total lecciones": total_hotmart,
+            "% Avance": pct_hotmart, "Estado": estado,
+            "Ultima leccion": ul_global, "Ultimo modulo": um_global,
+            "Ultima actividad": uf_global,
+            "Modulo abandono": ma_global, "Leccion abandono": la_global
+        })
         time.sleep(0.1)
 
     prog_bar.progress(1.0)
     status_txt.markdown("<p style='text-align:center;color:#1aab6d;font-size:14px;font-weight:800;'>✓ ¡Análisis completado!</p>", unsafe_allow_html=True)
 
-    df         = pd.DataFrame(all_data)
-    df_activos = df[df["Modulo"] != "Sin actividad"]
-
-    resumen_rows = []
-    for nombre, grupo in df.groupby("Nombre"):
-        email         = grupo["Email"].iloc[0]
-        pct_hotmart   = float(grupo["Pct Hotmart"].iloc[0] or 0)
-        comp_hotmart  = int(grupo["Completadas Hotmart"].iloc[0] or 0)
-        total_hotmart = int(grupo["Total Hotmart"].iloc[0] or 0)
-        estado        = estado_riesgo(pct_hotmart)
-        grupo_activo  = grupo[grupo["Modulo"] != "Sin actividad"]
-
-        if grupo_activo.empty:
-            resumen_rows.append({
-                "Nombre": nombre, "Email": email,
-                "Completadas": comp_hotmart, "Total lecciones": total_hotmart,
-                "% Avance": pct_hotmart, "Estado": estado,
-                "Ultima leccion": "—", "Ultimo modulo": "—",
-                "Ultima actividad": "—", "Modulo abandono": "—", "Leccion abandono": "—"
-            }); continue
-
-        ul, um, uf, ma, la = calcular_abandono(grupo_activo)
-        resumen_rows.append({
-            "Nombre": nombre, "Email": email,
-            "Completadas": comp_hotmart, "Total lecciones": total_hotmart,
-            "% Avance": pct_hotmart, "Estado": estado,
-            "Ultima leccion": ul, "Ultimo modulo": um, "Ultima actividad": uf,
-            "Modulo abandono": ma, "Leccion abandono": la
-        })
-
-    resumen = pd.DataFrame(resumen_rows)
-
-    pivot_rows = []
-    for m in modulos_sel:
-        df_m = df_activos[df_activos["Modulo"] == m]
-        for nombre, g in df_m.groupby("Nombre"):
-            comp_m  = int((g["Completada"] == "Si").sum())
-            # total_m = len(g) porque all_data ya tiene TODAS las páginas del catálogo
-            total_m = len(g)
-            pct_m   = min(round(comp_m / total_m * 100, 1) if total_m > 0 else 0.0, 100.0)
-            pivot_rows.append({
-                "Nombre": nombre, "Modulo": m,
-                "Completadas": comp_m, "Total modulo": total_m,
-                "Pendientes": max(0, total_m - comp_m), "% Avance": pct_m
-            })
-
-    df_pivot = pd.DataFrame(pivot_rows) if pivot_rows else pd.DataFrame()
+    # Todo ya está calculado en el loop — solo construir los DataFrames finales
+    resumen       = pd.DataFrame(resumen_rows)
+    df_pivot      = pd.DataFrame(pivot_rows) if pivot_rows else pd.DataFrame()
     tabla_cruzada = (
         df_pivot.pivot_table(index="Nombre", columns="Modulo", values="% Avance", fill_value=0).reset_index()
         if not df_pivot.empty else pd.DataFrame()
     )
-    df_detalle         = df_activos[["Nombre","Email","Modulo","Leccion","Tipo","Completada","Fecha Completado"]].copy()
-    pendientes_detalle = df_activos[df_activos["Completada"] != "Si"][["Nombre","Email","Modulo","Leccion","Tipo","Completada"]].copy()
 
+    # session_state solo guarda agregados pequeños — nunca el detalle crudo
     st.session_state["dashboard_data"] = {
-        "df": df, "df_detalle": df_detalle, "resumen": resumen,
-        "df_pivot": df_pivot, "tabla_cruzada": tabla_cruzada,
-        "pendientes_detalle": pendientes_detalle, "errores": errores,
-        "modulos_sel": modulos_sel, "total_alumnos_raw": len(students)
+        "resumen": resumen, "df_pivot": df_pivot,
+        "tabla_cruzada": tabla_cruzada, "errores": errores,
+        "modulos_sel": modulos_sel, "total_alumnos_raw": len(students),
+        "student_index": student_index,
     }
     time.sleep(0.4)
     st.session_state["page"] = "dashboard"
@@ -895,18 +876,18 @@ elif st.session_state["page"] == "loading":
 
 elif st.session_state["page"] == "dashboard":
 
-    data               = st.session_state["dashboard_data"]
-    df                 = data["df"]
-    df_detalle         = data["df_detalle"]
-    resumen            = data["resumen"]
-    df_pivot           = data["df_pivot"]
-    tabla_cruzada      = data["tabla_cruzada"]
-    pendientes_detalle = data["pendientes_detalle"]
-    errores            = data["errores"]
-    modulos_sel        = data["modulos_sel"]
-    total_alumnos_raw  = data["total_alumnos_raw"]
-    subdomain          = st.session_state["subdomain"]
-    club_name          = st.session_state["club_name"]
+    data              = st.session_state["dashboard_data"]
+    resumen           = data["resumen"]
+    df_pivot          = data["df_pivot"]
+    tabla_cruzada     = data["tabla_cruzada"]
+    errores           = data["errores"]
+    modulos_sel       = data["modulos_sel"]
+    total_alumnos_raw = data["total_alumnos_raw"]
+    student_index     = data.get("student_index", [])
+    subdomain         = st.session_state["subdomain"]
+    club_name         = st.session_state["club_name"]
+    token             = st.session_state["token"]
+    modulo_info       = st.session_state["modulo_info"]
 
     total_alumnos = len(resumen)
     sin_actividad = (resumen["Estado"] == "Sin actividad").sum()
@@ -1069,7 +1050,7 @@ elif st.session_state["page"] == "dashboard":
             st.info("No hay datos de detalle disponibles.")
 
     with tab3:
-        caption("Avance <strong>dentro de cada módulo</strong>. El zoom permite ver alumno por alumno en un módulo específico.")
+        caption("Avance <strong>dentro de cada módulo</strong>. Los gráficos usan datos ya cargados. El detalle de lecciones se obtiene on-demand.")
 
         if not df_pivot.empty:
             mod_prom = df_pivot.groupby("Modulo")["% Avance"].mean().round(1).reset_index()
@@ -1116,46 +1097,172 @@ elif st.session_state["page"] == "dashboard":
 
             st.markdown("---")
             st.markdown("**Detalle de lecciones por módulo y alumno**")
+            nombres_index = sorted([s["Nombre"] for s in student_index])
             col_f1, col_f2 = st.columns(2)
             with col_f1:
-                filtro_mod2 = st.selectbox("Módulo", sorted(df_detalle["Modulo"].unique()), key="mod2")
+                filtro_mod2 = st.selectbox("Módulo", sorted(modulos_sel), key="mod2")
             with col_f2:
-                alumnos_mod = sorted(df_detalle[df_detalle["Modulo"]==filtro_mod2]["Nombre"].unique().tolist())
-                filtro_al   = st.selectbox("Alumno", ["Todos"] + alumnos_mod, key="al2")
+                filtro_al = st.selectbox("Alumno", ["Todos"] + nombres_index, key="al2")
 
-            tipos_disponibles = sorted(df_detalle[df_detalle["Modulo"]==filtro_mod2]["Tipo"].unique().tolist())
-            filtro_tipo = st.multiselect("Tipo de contenido", options=tipos_disponibles,
-                                         default=tipos_disponibles, key="tipo_det")
+            if filtro_al == "Todos":
+                n_alumnos = len(student_index)
+                st.markdown(f"""
+                <div style="background:#fffbf0;border:1.5px solid #f0d070;border-radius:10px;
+                            padding:12px 16px;margin-bottom:12px;display:flex;gap:10px;align-items:flex-start;">
+                    <span style="font-size:18px;">⏳</span>
+                    <div>
+                        <strong style="color:#7a5c00;font-size:13px;">Carga con tiempo de espera</strong>
+                        <p style="color:#7a5c00;font-size:12px;margin:4px 0 0 0;line-height:1.6;">
+                            Ver el detalle de todos los alumnos requiere {n_alumnos} llamadas adicionales a la API
+                            (~{max(1, round(n_alumnos * 0.6 / 60))} min aprox).
+                            Selecciona un alumno específico para carga inmediata (1–2 seg).
+                        </p>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+                cargar_det = st.button("Cargar detalle de todos los alumnos", key="load_all_tab3")
+            else:
+                cargar_det = True
 
-            df_det_fil = df_detalle[df_detalle["Modulo"]==filtro_mod2]
-            if filtro_al != "Todos":
-                df_det_fil = df_det_fil[df_det_fil["Nombre"]==filtro_al]
-            if filtro_tipo:
-                df_det_fil = df_det_fil[df_det_fil["Tipo"].isin(filtro_tipo)]
-
-            st.caption("✅ Si = completada · ⏳ No = abierta pero pendiente · 🔒 No iniciada = nunca abierta")
-            paginated_dataframe(df_det_fil[["Nombre","Tipo","Leccion","Completada","Fecha Completado"]], "tab3_detalle")
+            if cargar_det:
+                mod_pages = modulo_info.get(filtro_mod2, {}).get("pages", [])
+                alumnos_a_cargar = (
+                    student_index if filtro_al == "Todos"
+                    else [s for s in student_index if s["Nombre"] == filtro_al]
+                )
+                det_rows = []
+                prog_det = st.progress(0)
+                for idx, s in enumerate(alumnos_a_cargar):
+                    prog_det.progress((idx + 1) / len(alumnos_a_cargar))
+                    lecs, _ = get_student_progress(token, subdomain, s["uid"])
+                    lecs_map = {l.get("page_id"): l for l in (lecs or []) if l.get("page_id")}
+                    if mod_pages:
+                        for page in mod_pages:
+                            pid    = page.get("page_id", page.get("id", ""))
+                            pname  = page.get("page_name", page.get("name", "Sin nombre"))
+                            tipo   = detectar_tipo(page.get("content_type", page.get("type", "")), pname)
+                            lesson = lecs_map.get(pid)
+                            if lesson:
+                                completada = "Si" if lesson.get("is_completed") else "No"
+                                fecha = ""
+                                if lesson.get("completed_date"):
+                                    try: fecha = datetime.fromtimestamp(lesson["completed_date"]/1000).strftime("%d/%m/%Y")
+                                    except: pass
+                            else:
+                                completada, fecha = "No iniciada", ""
+                            det_rows.append({"Nombre": s["Nombre"], "Tipo": tipo,
+                                             "Leccion": pname, "Completada": completada,
+                                             "Fecha Completado": fecha})
+                    else:
+                        for l in (lecs or []):
+                            if l.get("module_name") != filtro_mod2: continue
+                            pname = l.get("page_name", "Sin nombre")
+                            fecha = ""
+                            if l.get("completed_date"):
+                                try: fecha = datetime.fromtimestamp(l["completed_date"]/1000).strftime("%d/%m/%Y")
+                                except: pass
+                            det_rows.append({"Nombre": s["Nombre"], "Tipo": detectar_tipo("", pname),
+                                             "Leccion": pname,
+                                             "Completada": "Si" if l.get("is_completed") else "No",
+                                             "Fecha Completado": fecha})
+                    time.sleep(0.05)
+                prog_det.empty()
+                if det_rows:
+                    df_det = pd.DataFrame(det_rows)
+                    tipos_disp = sorted(df_det["Tipo"].unique().tolist())
+                    filtro_tipo = st.multiselect("Tipo de contenido", options=tipos_disp,
+                                                 default=tipos_disp, key="tipo_det3")
+                    if filtro_tipo:
+                        df_det = df_det[df_det["Tipo"].isin(filtro_tipo)]
+                    st.caption("✅ Si = completada · ⏳ No = abierta pero pendiente · 🔒 No iniciada = nunca abierta")
+                    paginated_dataframe(df_det, "tab3_detalle")
+                else:
+                    st.info("No hay datos de lecciones para esta selección.")
         else:
             st.warning("No hay datos de módulos disponibles.")
 
     with tab4:
-        caption("Lecciones que cada alumno <strong>no ha completado</strong>. Distingue entre lecciones abiertas pero no terminadas (No) y nunca abiertas (No iniciada).")
-        if not pendientes_detalle.empty:
-            col_p1, col_p2 = st.columns(2)
-            with col_p1:
-                filtro_alumno = st.selectbox("Filtrar por alumno",
-                    ["Todos"] + sorted(pendientes_detalle["Nombre"].unique().tolist()), key="pend_al")
-            with col_p2:
-                estados_pend = sorted(pendientes_detalle["Completada"].unique().tolist())
-                filtro_estado_pend = st.multiselect("Estado", options=estados_pend,
-                                                    default=estados_pend, key="pend_estado")
-            df_pf = pendientes_detalle if filtro_alumno == "Todos" else pendientes_detalle[pendientes_detalle["Nombre"]==filtro_alumno]
-            if filtro_estado_pend:
-                df_pf = df_pf[df_pf["Completada"].isin(filtro_estado_pend)]
-            st.markdown(f"**{len(df_pf)} lecciones pendientes**")
-            paginated_dataframe(df_pf, "tab4_pend")
+        caption("Lecciones <strong>no completadas</strong> por alumno. Distingue entre abiertas pero pendientes (No) y nunca abiertas (No iniciada).")
+
+        nombres_index4 = sorted([s["Nombre"] for s in student_index])
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            filtro_alumno4 = st.selectbox("Alumno", ["Todos"] + nombres_index4, key="pend_al")
+        with col_p2:
+            filtro_mod4 = st.selectbox("Módulo", ["Todos"] + sorted(modulos_sel), key="pend_mod")
+
+        if filtro_alumno4 == "Todos":
+            n_alumnos4 = len(student_index)
+            st.markdown(f"""
+            <div style="background:#fffbf0;border:1.5px solid #f0d070;border-radius:10px;
+                        padding:12px 16px;margin-bottom:12px;display:flex;gap:10px;align-items:flex-start;">
+                <span style="font-size:18px;">⏳</span>
+                <div>
+                    <strong style="color:#7a5c00;font-size:13px;">Carga con tiempo de espera</strong>
+                    <p style="color:#7a5c00;font-size:12px;margin:4px 0 0 0;line-height:1.6;">
+                        Ver pendientes de todos los alumnos requiere {n_alumnos4} llamadas adicionales a la API
+                        (~{max(1, round(n_alumnos4 * 0.6 / 60))} min aprox).
+                        Selecciona un alumno específico para carga inmediata.
+                    </p>
+                </div>
+            </div>""", unsafe_allow_html=True)
+            cargar_pend = st.button("Cargar pendientes de todos los alumnos", key="load_all_tab4")
         else:
-            st.success("¡Todos los alumnos completaron todas las lecciones!")
+            cargar_pend = True
+
+        if cargar_pend:
+            mods_a_cargar4 = modulos_sel if filtro_mod4 == "Todos" else [filtro_mod4]
+            alumnos_a_cargar4 = (
+                student_index if filtro_alumno4 == "Todos"
+                else [s for s in student_index if s["Nombre"] == filtro_alumno4]
+            )
+            pend_rows = []
+            prog_p = st.progress(0)
+            for idx, s in enumerate(alumnos_a_cargar4):
+                prog_p.progress((idx + 1) / len(alumnos_a_cargar4))
+                lecs, _ = get_student_progress(token, subdomain, s["uid"])
+                lecs_map = {l.get("page_id"): l for l in (lecs or []) if l.get("page_id")}
+                for mn in mods_a_cargar4:
+                    mod_pages = modulo_info.get(mn, {}).get("pages", [])
+                    if mod_pages:
+                        for page in mod_pages:
+                            pid    = page.get("page_id", page.get("id",""))
+                            pname  = page.get("page_name", page.get("name","Sin nombre"))
+                            tipo   = detectar_tipo(page.get("content_type", page.get("type","")), pname)
+                            lesson = lecs_map.get(pid)
+                            if lesson and lesson.get("is_completed"): continue
+                            estado_p = "No" if (lesson and not lesson.get("is_completed")) else "No iniciada"
+                            pend_rows.append({"Nombre": s["Nombre"], "Email": s["Email"],
+                                              "Modulo": mn, "Tipo": tipo,
+                                              "Leccion": pname, "Estado": estado_p})
+                    else:
+                        for l in (lecs or []):
+                            if l.get("module_name") != mn: continue
+                            if l.get("is_completed"): continue
+                            pname = l.get("page_name","Sin nombre")
+                            pend_rows.append({"Nombre": s["Nombre"], "Email": s["Email"],
+                                              "Modulo": mn, "Tipo": detectar_tipo("", pname),
+                                              "Leccion": pname, "Estado": "No"})
+                time.sleep(0.05)
+            prog_p.empty()
+            if pend_rows:
+                df_pend = pd.DataFrame(pend_rows)
+                col_fp1, col_fp2 = st.columns(2)
+                with col_fp1:
+                    estados_disp = sorted(df_pend["Estado"].unique().tolist())
+                    filtro_ep = st.multiselect("Estado", options=estados_disp,
+                                               default=estados_disp, key="pend_estado")
+                with col_fp2:
+                    tipos_disp4 = sorted(df_pend["Tipo"].unique().tolist())
+                    filtro_tp4 = st.multiselect("Tipo", options=tipos_disp4,
+                                                default=tipos_disp4, key="pend_tipo")
+                df_pend_fil = df_pend.copy()
+                if filtro_ep:  df_pend_fil = df_pend_fil[df_pend_fil["Estado"].isin(filtro_ep)]
+                if filtro_tp4: df_pend_fil = df_pend_fil[df_pend_fil["Tipo"].isin(filtro_tp4)]
+                st.markdown(f"**{len(df_pend_fil)} lecciones pendientes**")
+                st.caption("⏳ No = abierta pero no completada · 🔒 No iniciada = nunca abierta")
+                paginated_dataframe(df_pend_fil, "tab4_pend")
+            else:
+                st.success("¡Todos los alumnos completaron todas las lecciones en esta selección!")
 
     with tab5:
         caption("Tabla cruzada alumno × módulo. Cada celda = <strong>% de avance en ese módulo específico</strong>.")
@@ -1172,20 +1279,17 @@ elif st.session_state["page"] == "dashboard":
     col_txt, col_btn = st.columns([3, 1])
     with col_txt:
         st.markdown("""
-        <p style="font-weight:800;font-size:15px;color:#1a1815;margin-bottom:4px;">Exportar informe completo</p>
-        <p style="color:#8c8880;font-size:13px;margin:0;">Excel con 5 pestañas: resumen, por módulo, tabla cruzada, pendientes y detalle completo.</p>
+        <p style="font-weight:800;font-size:15px;color:#1a1815;margin-bottom:4px;">Exportar informe</p>
+        <p style="color:#8c8880;font-size:13px;margin:0;">Excel con Resumen, Por módulo y Mapa cruzado.</p>
         """, unsafe_allow_html=True)
     with col_btn:
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            resumen.to_excel(writer,                sheet_name="Resumen",          index=False)
+            resumen.to_excel(writer, sheet_name="Resumen", index=False)
             if not df_pivot.empty:
-                df_pivot.to_excel(writer,           sheet_name="Por modulo",       index=False)
+                df_pivot.to_excel(writer, sheet_name="Por modulo", index=False)
             if not tabla_cruzada.empty:
-                tabla_cruzada.to_excel(writer,      sheet_name="Tabla cruzada",    index=False)
-            if not pendientes_detalle.empty:
-                pendientes_detalle.to_excel(writer, sheet_name="Pendientes",       index=False)
-            df_detalle.to_excel(writer,             sheet_name="Detalle completo", index=False)
+                tabla_cruzada.to_excel(writer, sheet_name="Tabla cruzada", index=False)
         buffer.seek(0)
         st.download_button(
             label="📥 Descargar Excel",
